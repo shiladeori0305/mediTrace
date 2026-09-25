@@ -56,7 +56,6 @@ MAX_FILE_SIZE_MB = 20
 
 # --- Tesseract path override (Windows) ---------------------------------
 # If Tesseract is not on PATH, uncomment and set the correct install path:
-
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
@@ -340,6 +339,53 @@ DATE_REGEX = re.compile(
     r"\b(\d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4})\b"
 )
 
+# Textual month formats: "12 September 2026" / "September 12, 2026"
+_MONTH_NAMES = (
+    r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?"
+    r"|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?"
+)
+MONTH_DATE_REGEX = re.compile(
+    rf"\b(?:\d{{1,2}}\s+(?:{_MONTH_NAMES})\s+\d{{4}}|(?:{_MONTH_NAMES})\s+\d{{1,2}},?\s+\d{{4}})\b",
+    re.IGNORECASE,
+)
+
+# Frequency words that spaCy's general DATE label sometimes mistakes for dates.
+# Anything in this list, or anything matching FREQUENCY_REGEX, is NEVER a date.
+FREQUENCY_DATE_BLOCKLIST = {
+    "daily", "weekly", "monthly", "once daily", "twice daily", "thrice daily",
+    "once a day", "twice a day", "thrice a day", "every day", "every night",
+    "od", "bid", "tid", "qid", "hs",
+}
+
+
+def is_probable_date(candidate_text: str) -> bool:
+    """
+    Validate that a candidate string actually looks like a date before it is
+    allowed into results["dates"]. This is what stops spaCy from letting
+    frequency words like "daily" or "twice daily" through as dates.
+    """
+    stripped = candidate_text.strip().strip(".,")
+    lower = stripped.lower()
+
+    if not stripped:
+        return False
+    if lower in FREQUENCY_DATE_BLOCKLIST:
+        return False
+    if FREQUENCY_REGEX.search(stripped):
+        return False
+
+    return bool(DATE_REGEX.search(stripped) or MONTH_DATE_REGEX.search(stripped))
+
+
+def clean_value(value: str) -> str:
+    """
+    Strip trailing/leading punctuation and whitespace from an extracted VALUE
+    (never from source_text, which must stay verbatim as evidence).
+    e.g. "Penicillin." -> "Penicillin"
+    """
+    return value.strip().strip(" .,;:-")
+
+
 LAB_VALUE_REGEX = re.compile(
     r"\b([A-Za-z][A-Za-z0-9 ]{2,25}?)\s*[:\-]\s*(\d+(?:\.\d+)?)\s*"
     r"(mg/dl|g/dl|mmol/l|/mm3|%|meq/l|ng/ml|iu/l)\b",
@@ -384,7 +430,7 @@ def extract_medical_entities(text: str) -> dict:
         for phrase in ALLERGY_TRIGGER_PHRASES:
             if phrase in lower_line:
                 after = re.split(phrase, line, flags=re.IGNORECASE)
-                candidate_value = after[-1].strip(" :-\t")
+                candidate_value = clean_value(after[-1].strip(" :-\t"))
                 if candidate_value:
                     results["allergies"].append({
                         "value": candidate_value,
@@ -395,37 +441,50 @@ def extract_medical_entities(text: str) -> dict:
         for cond in CONDITION_KEYWORDS:
             if re.search(rf"\b{re.escape(cond)}\b", lower_line):
                 results["conditions"].append({
-                    "value": cond.capitalize(),
+                    "value": clean_value(cond.capitalize()),
                     "line": line.strip(),
                 })
 
         # --- Lab values: regex "Parameter: number unit" ---
         for match in LAB_VALUE_REGEX.finditer(line):
             results["lab_values"].append({
-                "parameter": match.group(1).strip(),
+                "parameter": clean_value(match.group(1)),
                 "value": match.group(2),
                 "unit": match.group(3),
                 "line": line.strip(),
             })
 
-        # --- Dates via regex (fast, reliable for DD/MM/YYYY style) ---
+        # --- Dates via regex: numeric (DD/MM/YYYY) and textual month formats ---
+        # Frequency phrases ("twice daily", "every 8 hours") are matched by
+        # FREQUENCY_REGEX elsewhere on this same line and are NEVER treated as dates.
         for match in DATE_REGEX.finditer(line):
-            results["dates"].append({
-                "value": match.group(1),
-                "line": line.strip(),
-            })
+            value = clean_value(match.group(1))
+            if is_probable_date(value):
+                results["dates"].append({"value": value, "line": line.strip()})
 
-    # --- Dates via spaCy as a fallback/supplement (handles "12 Sept 2026" etc.) ---
+        for match in MONTH_DATE_REGEX.finditer(line):
+            value = clean_value(match.group(0))
+            if is_probable_date(value):
+                results["dates"].append({"value": value, "line": line.strip()})
+
+    # --- Dates via spaCy as a fallback/supplement only ---
+    # spaCy's general DATE label frequently misfires on frequency words like
+    # "daily" or "twice daily" - every spaCy candidate is validated against
+    # is_probable_date() before being accepted, so those never slip through.
     if nlp is not None:
         doc = nlp(text)
         for ent in doc.ents:
-            if ent.label_ == "DATE":
-                # avoid exact duplicates already captured by regex
-                if not any(ent.text == d["value"] for d in results["dates"]):
-                    results["dates"].append({
-                        "value": ent.text,
-                        "line": ent.sent.text.strip() if ent.sent else ent.text,
-                    })
+            if ent.label_ != "DATE":
+                continue
+            value = clean_value(ent.text)
+            if not is_probable_date(value):
+                continue
+            if any(value == d["value"] for d in results["dates"]):
+                continue  # avoid duplicates already captured by regex
+            results["dates"].append({
+                "value": value,
+                "line": ent.sent.text.strip() if ent.sent else value,
+            })
 
     return results
 
