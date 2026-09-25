@@ -25,6 +25,8 @@ import io
 import uuid
 import shutil
 import logging
+import json
+import sqlite3
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -56,7 +58,7 @@ MAX_FILE_SIZE_MB = 20
 
 # --- Tesseract path override (Windows) ---------------------------------
 # If Tesseract is not on PATH, uncomment and set the correct install path:
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
 
 
 # =========================================================
@@ -664,6 +666,488 @@ def process_document(file_path: str, original_filename: str) -> DocumentProcessi
 
 
 # =========================================================
+# MEMBER 2: VERIFICATION AGENT + VERIFIED PATIENT PROFILE
+# =========================================================
+# Consumes CandidateFact objects (produced above by Member 1) and decides
+# whether each one may enter the trusted "verified patient profile" that
+# Member 3 and Member 4 will read from later.
+#
+# Design rules (from the project brief):
+#   - Deterministic, explainable rules only. No LLM medical judgement.
+#   - Never silently overwrite a verified fact that conflicts with a new one.
+#   - Always preserve the original evidence (source_document + source_text).
+#   - Keep "extraction_confidence" (Member 1) and "verification_confidence"
+#     (Member 2) as two separate numbers - never replace one with the other.
+#
+# Statuses:
+#   candidate -> produced by Member 1, not yet looked at here.
+#   verified  -> supported by its own source text AND does not conflict
+#                with an existing verified record. Part of the active profile.
+#   rejected  -> not supported by its own source text (or malformed/unsupported
+#                fact_type). Never enters the profile.
+#   conflict  -> supported by its own source text, but contradicts an existing
+#                verified record. Stored for review; the existing verified
+#                record is NEVER overwritten or deleted.
+
+DB_PATH = os.path.join(BASE_DIR, "data", "meditrace.db")
+
+ALLOWED_FACT_TYPES = {"medication", "allergy", "condition", "lab_value", "date"}
+
+# Phrases meaning "the patient has been documented as having NO allergies".
+# Needed to catch the "No known allergies" vs "Penicillin" conflict case.
+ALLERGY_NEGATION_PHRASES = {
+    "no known allergies", "no known allergy", "no allergies", "none known",
+    "nka", "no known drug allergies", "none",
+}
+
+
+class VerifyRequest(BaseModel):
+    """Input body for POST /verify. Reuses Member 1's CandidateFact model."""
+    candidate_facts: List[CandidateFact]
+
+
+# ---------------------------------------------------------
+# DATABASE SETUP (SQLite - three simple tables)
+# ---------------------------------------------------------
+def get_db_connection() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_verification_db() -> None:
+    """Create the Member 2 tables if they don't already exist. Never drops data."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+
+        # Every candidate Member 2 has ever looked at, with its final decision.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS candidate_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fact_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                dosage TEXT,
+                frequency TEXT,
+                date TEXT,
+                lab_value TEXT,
+                source_document TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                extraction_confidence REAL NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        # The trusted patient profile. Holds "verified" rows (the active
+        # profile) AND "conflict" rows (kept for review, never merged in).
+        # source_references is a JSON list so repeated evidence for the same
+        # fact can be attached without creating a second row (see section 15
+        # of the brief: avoid unnecessary duplicate entries).
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS verified_facts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fact_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                dosage TEXT,
+                frequency TEXT,
+                date TEXT,
+                lab_value TEXT,
+                source_document TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                extraction_confidence REAL NOT NULL,
+                verification_confidence REAL NOT NULL,
+                status TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                source_references TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+
+        # Full audit trail: one row per verification decision ever made.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS verification_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                fact_type TEXT NOT NULL,
+                value TEXT NOT NULL,
+                source_document TEXT NOT NULL,
+                source_text TEXT NOT NULL,
+                extraction_confidence REAL NOT NULL,
+                verification_confidence REAL NOT NULL,
+                decision TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                compared_with TEXT,
+                created_at TEXT NOT NULL
+            )
+        """)
+
+        conn.commit()
+    finally:
+        conn.close()
+
+
+init_verification_db()
+
+
+# ---------------------------------------------------------
+# VERIFICATION HELPERS
+# ---------------------------------------------------------
+def is_allergy_negation(value: str) -> bool:
+    """True if a value documents the ABSENCE of allergies (e.g. 'No known allergies')."""
+    v = value.strip().lower().strip(".")
+    if v in ALLERGY_NEGATION_PHRASES:
+        return True
+    return v.startswith("no known") or v.startswith("no allerg")
+
+
+def evidence_supports_candidate(candidate: CandidateFact) -> bool:
+    """
+    Verification rule #1: does the candidate's OWN source_text actually contain
+    the evidence for its value? This is a text-support check only - it says
+    nothing about whether the fact is medically true or safe.
+    """
+    source_lower = (candidate.source_text or "").lower()
+    value_lower = (candidate.value or "").strip().lower()
+
+    if not source_lower or not value_lower:
+        return False
+
+    if candidate.fact_type == "lab_value":
+        if value_lower not in source_lower:
+            return False
+        if candidate.lab_value:
+            numbers = re.findall(r"\d+(?:\.\d+)?", candidate.lab_value)
+            if numbers and numbers[0] not in source_lower:
+                return False
+        return True
+
+    if candidate.fact_type == "allergy":
+        if is_allergy_negation(candidate.value):
+            return any(p in source_lower for p in ("no known", "no allerg", "none", "nka"))
+        return value_lower in source_lower or "allerg" in source_lower
+
+    # medication, condition, date: the value must appear in its own evidence text.
+    return value_lower in source_lower
+
+
+def fetch_verified_facts(cur: sqlite3.Cursor, fact_type: str) -> List[dict]:
+    """All currently-active (status='verified') facts of one type, for conflict/duplicate checks."""
+    cur.execute(
+        "SELECT * FROM verified_facts WHERE fact_type = ? AND status = 'verified'",
+        (fact_type,),
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def find_duplicate(candidate: CandidateFact, existing: List[dict]) -> Optional[dict]:
+    """An existing verified record that is functionally the SAME fact (not just the same name)."""
+    value_lower = candidate.value.strip().lower()
+    for rec in existing:
+        if rec["value"].strip().lower() != value_lower:
+            continue
+        if candidate.fact_type == "medication":
+            if (rec.get("dosage") or "").strip().lower() == (candidate.dosage or "").strip().lower() and \
+               (rec.get("frequency") or "").strip().lower() == (candidate.frequency or "").strip().lower():
+                return rec
+        elif candidate.fact_type == "lab_value":
+            if (rec.get("lab_value") or "") == (candidate.lab_value or ""):
+                return rec
+        elif candidate.fact_type == "date":
+            if (rec.get("date") or "") == (candidate.date or ""):
+                return rec
+        else:  # allergy, condition: matching value alone is a duplicate
+            return rec
+    return None
+
+
+def find_conflict(candidate: CandidateFact, existing: List[dict]) -> Optional[dict]:
+    """
+    An existing verified record that CONTRADICTS the candidate.
+    Deliberately narrow, per the brief: same medication name with a different
+    dosage/frequency, or an allergy statement that contradicts a "no known
+    allergies" statement (or vice versa). Anything else is left alone rather
+    than guessed at - that judgement belongs to a human or to Member 3.
+    """
+    if candidate.fact_type == "medication":
+        value_lower = candidate.value.strip().lower()
+        for rec in existing:
+            if rec["value"].strip().lower() != value_lower:
+                continue
+            existing_dosage = (rec.get("dosage") or "").strip().lower()
+            new_dosage = (candidate.dosage or "").strip().lower()
+            existing_freq = (rec.get("frequency") or "").strip().lower()
+            new_freq = (candidate.frequency or "").strip().lower()
+            if existing_dosage and new_dosage and existing_dosage != new_dosage:
+                return rec
+            if existing_freq and new_freq and existing_freq != new_freq:
+                return rec
+        return None
+
+    if candidate.fact_type == "allergy":
+        candidate_is_negation = is_allergy_negation(candidate.value)
+        for rec in existing:
+            rec_is_negation = is_allergy_negation(rec["value"])
+            if candidate_is_negation != rec_is_negation:
+                return rec
+        return None
+
+    # condition / lab_value / date: no contradiction rule for this milestone.
+    return None
+
+
+def calculate_verification_confidence(candidate: CandidateFact, strong_evidence: bool) -> float:
+    """
+    Simple, explainable rule: start from Member 1's extraction_confidence and
+    add a small bonus once the candidate's own text has been confirmed to
+    support it. This is a SYSTEM confidence score, not a medical certainty score.
+    """
+    bonus = 0.15 if strong_evidence else 0.05
+    return round(min(candidate.extraction_confidence + bonus, 0.97), 2)
+
+
+# ---------------------------------------------------------
+# PERSISTENCE HELPERS
+# ---------------------------------------------------------
+def insert_candidate_fact(cur: sqlite3.Cursor, candidate: CandidateFact, final_status: str) -> None:
+    cur.execute(
+        """INSERT INTO candidate_facts
+           (fact_type, value, dosage, frequency, date, lab_value,
+            source_document, source_text, extraction_confidence, status, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+        (candidate.fact_type, candidate.value, candidate.dosage, candidate.frequency,
+         candidate.date, candidate.lab_value, candidate.source_document, candidate.source_text,
+         candidate.extraction_confidence, final_status, datetime.utcnow().isoformat() + "Z"),
+    )
+
+
+def insert_verified_fact(cur: sqlite3.Cursor, candidate: CandidateFact,
+                          verification_confidence: float, status: str, reason: str) -> int:
+    now = datetime.utcnow().isoformat() + "Z"
+    refs = json.dumps([{"source_document": candidate.source_document, "source_text": candidate.source_text}])
+    cur.execute(
+        """INSERT INTO verified_facts
+           (fact_type, value, dosage, frequency, date, lab_value, source_document, source_text,
+            extraction_confidence, verification_confidence, status, reason, source_references,
+            created_at, updated_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (candidate.fact_type, candidate.value, candidate.dosage, candidate.frequency,
+         candidate.date, candidate.lab_value, candidate.source_document, candidate.source_text,
+         candidate.extraction_confidence, verification_confidence, status, reason, refs, now, now),
+    )
+    return cur.lastrowid
+
+
+def merge_source_reference(cur: sqlite3.Cursor, verified_id: int, source_document: str, source_text: str) -> None:
+    """Attach a new piece of evidence to an existing verified fact instead of duplicating the row."""
+    cur.execute("SELECT source_references FROM verified_facts WHERE id = ?", (verified_id,))
+    row = cur.fetchone()
+    refs = json.loads(row["source_references"]) if row and row["source_references"] else []
+    new_ref = {"source_document": source_document, "source_text": source_text}
+    if new_ref not in refs:
+        refs.append(new_ref)
+    cur.execute(
+        "UPDATE verified_facts SET source_references = ?, updated_at = ? WHERE id = ?",
+        (json.dumps(refs), datetime.utcnow().isoformat() + "Z", verified_id),
+    )
+
+
+def insert_verification_log(cur: sqlite3.Cursor, candidate: CandidateFact, decision: str,
+                             reason: str, verification_confidence: float,
+                             compared_with: Optional[dict]) -> None:
+    cur.execute(
+        """INSERT INTO verification_logs
+           (fact_type, value, source_document, source_text, extraction_confidence,
+            verification_confidence, decision, reason, compared_with, created_at)
+           VALUES (?,?,?,?,?,?,?,?,?,?)""",
+        (candidate.fact_type, candidate.value, candidate.source_document, candidate.source_text,
+         candidate.extraction_confidence, verification_confidence, decision, reason,
+         json.dumps(compared_with) if compared_with else None, datetime.utcnow().isoformat() + "Z"),
+    )
+
+
+# ---------------------------------------------------------
+# CORE VERIFICATION PIPELINE
+# ---------------------------------------------------------
+def verify_single_candidate(cur: sqlite3.Cursor, candidate: CandidateFact) -> dict:
+    """
+    Runs one candidate through: fact_type check -> evidence check -> duplicate
+    check -> conflict check, persists the outcome, and returns the JSON-ready
+    result record for the API response.
+    """
+    conflict_ref: Optional[dict] = None
+    already_persisted_as_verified = False  # True once merged into an existing row
+
+    if candidate.fact_type not in ALLOWED_FACT_TYPES:
+        status = "rejected"
+        reason = f"Unsupported fact_type '{candidate.fact_type}'."
+        vconf = 0.0
+
+    elif not candidate.source_document or not candidate.source_text:
+        status = "rejected"
+        reason = "Missing source_document or source_text; a fact cannot be verified without evidence."
+        vconf = 0.0
+
+    elif not evidence_supports_candidate(candidate):
+        status = "rejected"
+        reason = "The candidate's own source text does not clearly support this value."
+        vconf = 0.2
+
+    else:
+        existing = fetch_verified_facts(cur, candidate.fact_type)
+        dup = find_duplicate(candidate, existing)
+
+        if dup:
+            merge_source_reference(cur, dup["id"], candidate.source_document, candidate.source_text)
+            status = "verified"
+            reason = "Matches an already-verified fact; new source reference attached (no duplicate row created)."
+            vconf = calculate_verification_confidence(candidate, True)
+            already_persisted_as_verified = True
+        else:
+            conflict_ref = find_conflict(candidate, existing)
+            if conflict_ref:
+                status = "conflict"
+                detail = f"'{conflict_ref['value']}'"
+                if conflict_ref.get("dosage"):
+                    detail += f" ({conflict_ref['dosage']})"
+                reason = (f"Conflicts with an existing verified {candidate.fact_type} record {detail}. "
+                          "Existing record was NOT overwritten; both pieces of evidence are preserved.")
+                vconf = calculate_verification_confidence(candidate, True)
+            else:
+                status = "verified"
+                reason = "Supported by its source text and does not conflict with any existing verified record."
+                vconf = calculate_verification_confidence(candidate, True)
+
+    # Always store the candidate itself + a full audit-log entry, whatever happened.
+    insert_candidate_fact(cur, candidate, status)
+    insert_verification_log(cur, candidate, status, reason, vconf, conflict_ref)
+
+    # Conflicts are stored too (for review) but never merged into the active
+    # profile; verified duplicates were already merged into an existing row above.
+    if status == "conflict" or (status == "verified" and not already_persisted_as_verified):
+        insert_verified_fact(cur, candidate, vconf, status, reason)
+
+    record = {
+        "fact_type": candidate.fact_type,
+        "value": candidate.value,
+        "dosage": candidate.dosage,
+        "frequency": candidate.frequency,
+        "date": candidate.date,
+        "lab_value": candidate.lab_value,
+        "source_document": candidate.source_document,
+        "source_text": candidate.source_text,
+        "extraction_confidence": candidate.extraction_confidence,
+        "verification_confidence": vconf,
+        "status": status,
+        "reason": reason,
+    }
+    if conflict_ref:
+        record["conflicting_with"] = {
+            "value": conflict_ref["value"],
+            "dosage": conflict_ref.get("dosage"),
+            "frequency": conflict_ref.get("frequency"),
+            "source_document": conflict_ref.get("source_document"),
+            "source_text": conflict_ref.get("source_text"),
+        }
+    return record
+
+
+# ---------------------------------------------------------
+# VERIFIED PATIENT PROFILE
+# ---------------------------------------------------------
+def build_verified_profile() -> dict:
+    """The trusted profile: only status='verified' facts, grouped by type."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM verified_facts WHERE status = 'verified' ORDER BY id ASC")
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    profile = {"medications": [], "allergies": [], "conditions": [], "lab_values": [], "dates": []}
+    key_by_type = {
+        "medication": "medications", "allergy": "allergies", "condition": "conditions",
+        "lab_value": "lab_values", "date": "dates",
+    }
+    for row in rows:
+        key = key_by_type.get(row["fact_type"])
+        if not key:
+            continue
+        profile[key].append({
+            "value": row["value"],
+            "dosage": row["dosage"],
+            "frequency": row["frequency"],
+            "date": row["date"],
+            "lab_value": row["lab_value"],
+            "extraction_confidence": row["extraction_confidence"],
+            "verification_confidence": row["verification_confidence"],
+            "status": row["status"],
+            "reason": row["reason"],
+            "sources": json.loads(row["source_references"]) if row["source_references"] else [],
+        })
+    return profile
+
+
+def fetch_unresolved_conflicts() -> List[dict]:
+    """status='conflict' rows: evidence-supported facts that clash with the verified profile."""
+    conn = get_db_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM verified_facts WHERE status = 'conflict' ORDER BY id ASC")
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    for r in rows:
+        r.pop("source_references", None)
+    return rows
+
+
+def verify_candidate_facts(candidate_facts: List[CandidateFact]) -> dict:
+    """
+    Member 2's single public entry point.
+
+    Takes the list of CandidateFact objects Member 1 produces, runs EACH one
+    through verify_single_candidate() (evidence check -> duplicate check ->
+    conflict check -> verified/rejected/conflict), persists every decision to
+    meditrace.db, and returns the full result set.
+
+    This function does the actual work; POST /verify is a thin HTTP wrapper
+    around it. It can also be called directly (e.g. from a test, a script, or
+    a future Member 3/4 integration) without going through the HTTP layer.
+    """
+    verified_out: List[dict] = []
+    rejected_out: List[dict] = []
+    conflict_out: List[dict] = []
+
+    if candidate_facts:
+        conn = get_db_connection()
+        try:
+            cur = conn.cursor()
+            for candidate in candidate_facts:
+                record = verify_single_candidate(cur, candidate)
+                if record["status"] == "verified":
+                    verified_out.append(record)
+                elif record["status"] == "rejected":
+                    rejected_out.append(record)
+                else:
+                    conflict_out.append(record)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    return {
+        "verified_facts": verified_out,
+        "rejected_facts": rejected_out,
+        "conflicts": conflict_out,
+        "verified_profile": build_verified_profile(),
+    }
+
+
+# =========================================================
 # API ROUTES
 # =========================================================
 @app.get("/", response_class=HTMLResponse)
@@ -735,6 +1219,36 @@ async def process_saved_document(saved_filename: str):
     except Exception as e:
         logger.error(f"Processing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
+
+
+@app.post("/verify")
+async def verify_candidates(payload: VerifyRequest):
+    """
+    HTTP entry point for Member 2. Accepts {"candidate_facts": [...]} exactly
+    as produced by Member 1's /process endpoint, and returns which ones were
+    verified, rejected, or flagged as conflicts - plus the resulting verified
+    profile. All the actual logic lives in verify_candidate_facts().
+    """
+    try:
+        return verify_candidate_facts(payload.candidate_facts)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Verification failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Verification failed: {str(e)}")
+
+
+@app.get("/patient/profile")
+async def get_patient_profile():
+    """Returns the current verified patient profile plus any unresolved conflicts."""
+    try:
+        return {
+            "verified_profile": build_verified_profile(),
+            "unresolved_conflicts": fetch_unresolved_conflicts(),
+        }
+    except Exception as e:
+        logger.error(f"Failed to build patient profile: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve patient profile: {str(e)}")
 
 
 @app.get("/health")
