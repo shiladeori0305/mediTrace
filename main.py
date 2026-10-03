@@ -69,6 +69,7 @@ if _tess:
     pytesseract.pytesseract.tesseract_cmd = _tess
 elif os.path.exists("/opt/homebrew/bin/tesseract"):
     pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
+    # On Windows: pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 
 # =========================================================
