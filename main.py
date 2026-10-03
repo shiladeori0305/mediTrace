@@ -26,7 +26,6 @@ import uuid
 import shutil
 import logging
 import json
-import sqlite3
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -36,6 +35,12 @@ import pytesseract
 import spacy
 import fitz  # PyMuPDF
 from PIL import Image
+
+from dotenv import load_dotenv
+from pymongo import MongoClient, ASCENDING
+from pymongo.database import Database
+from bson import ObjectId
+from bson.errors import InvalidId
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
@@ -52,13 +57,18 @@ logger = logging.getLogger("meditrace.document_agent")
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UPLOAD_DIR = os.path.join(BASE_DIR, "data", "uploads")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+load_dotenv(os.path.join(BASE_DIR, ".env"))  # reads MONGODB_URI etc. from .env
 
 ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
 MAX_FILE_SIZE_MB = 20
 
-# --- Tesseract path override (Windows) ---------------------------------
-# If Tesseract is not on PATH, uncomment and set the correct install path:
-pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
+# --- Tesseract path override ---------------------------------------------
+# If Tesseract is not on PATH, set TESSERACT_CMD in .env (e.g. C:\Program Files\Tesseract-OCR\tesseract.exe)
+_tess = os.getenv("TESSERACT_CMD")
+if _tess:
+    pytesseract.pytesseract.tesseract_cmd = _tess
+elif os.path.exists("/opt/homebrew/bin/tesseract"):
+    pytesseract.pytesseract.tesseract_cmd = "/opt/homebrew/bin/tesseract"
 
 
 # =========================================================
@@ -689,7 +699,9 @@ def process_document(file_path: str, original_filename: str) -> DocumentProcessi
 #                verified record. Stored for review; the existing verified
 #                record is NEVER overwritten or deleted.
 
-DB_PATH = os.path.join(BASE_DIR, "data", "meditrace.db")
+# --- MongoDB configuration (set in .env, see .env.example) ---------------
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_DB = os.getenv("MONGODB_DB", "meditrace")
 
 ALLOWED_FACT_TYPES = {"medication", "allergy", "condition", "lab_value", "date"}
 
@@ -707,84 +719,40 @@ class VerifyRequest(BaseModel):
 
 
 # ---------------------------------------------------------
-# DATABASE SETUP (SQLite - three simple tables)
+# DATABASE SETUP (MongoDB - three collections)
 # ---------------------------------------------------------
-def get_db_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+# candidate_facts   : every candidate ever looked at, with its final decision
+# verified_facts    : trusted profile ("verified") + "conflict" rows for review
+# verification_logs : full audit trail, one document per decision
+_mongo_client: Optional[MongoClient] = None
+
+
+def get_db() -> Database:
+    """Return the MongoDB database handle (client is created once and reused)."""
+    global _mongo_client
+    if _mongo_client is None:
+        _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+    return _mongo_client[MONGODB_DB]
 
 
 def init_verification_db() -> None:
-    """Create the Member 2 tables if they don't already exist. Never drops data."""
-    conn = get_db_connection()
+    """Create indexes (collections are created lazily by MongoDB). Never drops data."""
     try:
-        cur = conn.cursor()
+        db = get_db()
+        db.verified_facts.create_index([("fact_type", ASCENDING), ("status", ASCENDING)])
+        db.verification_logs.create_index([("created_at", ASCENDING)])
+        db.candidate_facts.create_index([("created_at", ASCENDING)])
+        logger.info(f"MongoDB ready (db='{MONGODB_DB}')")
+    except Exception as e:
+        # Don't crash on import; /health will report the problem.
+        logger.error(f"Could not connect to MongoDB at startup: {e}")
 
-        # Every candidate Member 2 has ever looked at, with its final decision.
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS candidate_facts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fact_type TEXT NOT NULL,
-                value TEXT NOT NULL,
-                dosage TEXT,
-                frequency TEXT,
-                date TEXT,
-                lab_value TEXT,
-                source_document TEXT NOT NULL,
-                source_text TEXT NOT NULL,
-                extraction_confidence REAL NOT NULL,
-                status TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-        """)
 
-        # The trusted patient profile. Holds "verified" rows (the active
-        # profile) AND "conflict" rows (kept for review, never merged in).
-        # source_references is a JSON list so repeated evidence for the same
-        # fact can be attached without creating a second row (see section 15
-        # of the brief: avoid unnecessary duplicate entries).
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS verified_facts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fact_type TEXT NOT NULL,
-                value TEXT NOT NULL,
-                dosage TEXT,
-                frequency TEXT,
-                date TEXT,
-                lab_value TEXT,
-                source_document TEXT NOT NULL,
-                source_text TEXT NOT NULL,
-                extraction_confidence REAL NOT NULL,
-                verification_confidence REAL NOT NULL,
-                status TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                source_references TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-        """)
-
-        # Full audit trail: one row per verification decision ever made.
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS verification_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                fact_type TEXT NOT NULL,
-                value TEXT NOT NULL,
-                source_document TEXT NOT NULL,
-                source_text TEXT NOT NULL,
-                extraction_confidence REAL NOT NULL,
-                verification_confidence REAL NOT NULL,
-                decision TEXT NOT NULL,
-                reason TEXT NOT NULL,
-                compared_with TEXT,
-                created_at TEXT NOT NULL
-            )
-        """)
-
-        conn.commit()
-    finally:
-        conn.close()
+def doc_to_dict(doc: dict) -> dict:
+    """Mongo document -> plain dict with '_id' replaced by a string 'id' (JSON-safe)."""
+    out = dict(doc)
+    out["id"] = str(out.pop("_id"))
+    return out
 
 
 init_verification_db()
@@ -831,13 +799,9 @@ def evidence_supports_candidate(candidate: CandidateFact) -> bool:
     return value_lower in source_lower
 
 
-def fetch_verified_facts(cur: sqlite3.Cursor, fact_type: str) -> List[dict]:
+def fetch_verified_facts(db: Database, fact_type: str) -> List[dict]:
     """All currently-active (status='verified') facts of one type, for conflict/duplicate checks."""
-    cur.execute(
-        "SELECT * FROM verified_facts WHERE fact_type = ? AND status = 'verified'",
-        (fact_type,),
-    )
-    return [dict(row) for row in cur.fetchall()]
+    return [doc_to_dict(d) for d in db.verified_facts.find({"fact_type": fact_type, "status": "verified"})]
 
 
 def find_duplicate(candidate: CandidateFact, existing: List[dict]) -> Optional[dict]:
@@ -909,67 +873,61 @@ def calculate_verification_confidence(candidate: CandidateFact, strong_evidence:
 # ---------------------------------------------------------
 # PERSISTENCE HELPERS
 # ---------------------------------------------------------
-def insert_candidate_fact(cur: sqlite3.Cursor, candidate: CandidateFact, final_status: str) -> None:
-    cur.execute(
-        """INSERT INTO candidate_facts
-           (fact_type, value, dosage, frequency, date, lab_value,
-            source_document, source_text, extraction_confidence, status, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-        (candidate.fact_type, candidate.value, candidate.dosage, candidate.frequency,
-         candidate.date, candidate.lab_value, candidate.source_document, candidate.source_text,
-         candidate.extraction_confidence, final_status, datetime.utcnow().isoformat() + "Z"),
-    )
+def now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
 
 
-def insert_verified_fact(cur: sqlite3.Cursor, candidate: CandidateFact,
-                          verification_confidence: float, status: str, reason: str) -> int:
-    now = datetime.utcnow().isoformat() + "Z"
-    refs = json.dumps([{"source_document": candidate.source_document, "source_text": candidate.source_text}])
-    cur.execute(
-        """INSERT INTO verified_facts
-           (fact_type, value, dosage, frequency, date, lab_value, source_document, source_text,
-            extraction_confidence, verification_confidence, status, reason, source_references,
-            created_at, updated_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-        (candidate.fact_type, candidate.value, candidate.dosage, candidate.frequency,
-         candidate.date, candidate.lab_value, candidate.source_document, candidate.source_text,
-         candidate.extraction_confidence, verification_confidence, status, reason, refs, now, now),
-    )
-    return cur.lastrowid
+def insert_candidate_fact(db: Database, candidate: CandidateFact, final_status: str) -> None:
+    doc = candidate.model_dump() if hasattr(candidate, "model_dump") else candidate.dict()
+    doc.update({"status": final_status, "created_at": now_iso()})
+    db.candidate_facts.insert_one(doc)
 
 
-def merge_source_reference(cur: sqlite3.Cursor, verified_id: int, source_document: str, source_text: str) -> None:
+def insert_verified_fact(db: Database, candidate: CandidateFact,
+                          verification_confidence: float, status: str, reason: str) -> str:
+    now = now_iso()
+    doc = {
+        "fact_type": candidate.fact_type, "value": candidate.value,
+        "dosage": candidate.dosage, "frequency": candidate.frequency,
+        "date": candidate.date, "lab_value": candidate.lab_value,
+        "source_document": candidate.source_document, "source_text": candidate.source_text,
+        "extraction_confidence": candidate.extraction_confidence,
+        "verification_confidence": verification_confidence,
+        "status": status, "reason": reason,
+        "source_references": [{"source_document": candidate.source_document,
+                               "source_text": candidate.source_text}],
+        "created_at": now, "updated_at": now,
+    }
+    return str(db.verified_facts.insert_one(doc).inserted_id)
+
+
+def merge_source_reference(db: Database, verified_id: str, source_document: str, source_text: str) -> None:
     """Attach a new piece of evidence to an existing verified fact instead of duplicating the row."""
-    cur.execute("SELECT source_references FROM verified_facts WHERE id = ?", (verified_id,))
-    row = cur.fetchone()
-    refs = json.loads(row["source_references"]) if row and row["source_references"] else []
-    new_ref = {"source_document": source_document, "source_text": source_text}
-    if new_ref not in refs:
-        refs.append(new_ref)
-    cur.execute(
-        "UPDATE verified_facts SET source_references = ?, updated_at = ? WHERE id = ?",
-        (json.dumps(refs), datetime.utcnow().isoformat() + "Z", verified_id),
+    db.verified_facts.update_one(
+        {"_id": ObjectId(verified_id)},
+        {"$addToSet": {"source_references": {"source_document": source_document,
+                                              "source_text": source_text}},
+         "$set": {"updated_at": now_iso()}},
     )
 
 
-def insert_verification_log(cur: sqlite3.Cursor, candidate: CandidateFact, decision: str,
+def insert_verification_log(db: Database, candidate: CandidateFact, decision: str,
                              reason: str, verification_confidence: float,
                              compared_with: Optional[dict]) -> None:
-    cur.execute(
-        """INSERT INTO verification_logs
-           (fact_type, value, source_document, source_text, extraction_confidence,
-            verification_confidence, decision, reason, compared_with, created_at)
-           VALUES (?,?,?,?,?,?,?,?,?,?)""",
-        (candidate.fact_type, candidate.value, candidate.source_document, candidate.source_text,
-         candidate.extraction_confidence, verification_confidence, decision, reason,
-         json.dumps(compared_with) if compared_with else None, datetime.utcnow().isoformat() + "Z"),
-    )
+    db.verification_logs.insert_one({
+        "fact_type": candidate.fact_type, "value": candidate.value,
+        "source_document": candidate.source_document, "source_text": candidate.source_text,
+        "extraction_confidence": candidate.extraction_confidence,
+        "verification_confidence": verification_confidence,
+        "decision": decision, "reason": reason,
+        "compared_with": compared_with, "created_at": now_iso(),
+    })
 
 
 # ---------------------------------------------------------
 # CORE VERIFICATION PIPELINE
 # ---------------------------------------------------------
-def verify_single_candidate(cur: sqlite3.Cursor, candidate: CandidateFact) -> dict:
+def verify_single_candidate(db: Database, candidate: CandidateFact) -> dict:
     """
     Runs one candidate through: fact_type check -> evidence check -> duplicate
     check -> conflict check, persists the outcome, and returns the JSON-ready
@@ -994,11 +952,11 @@ def verify_single_candidate(cur: sqlite3.Cursor, candidate: CandidateFact) -> di
         vconf = 0.2
 
     else:
-        existing = fetch_verified_facts(cur, candidate.fact_type)
+        existing = fetch_verified_facts(db, candidate.fact_type)
         dup = find_duplicate(candidate, existing)
 
         if dup:
-            merge_source_reference(cur, dup["id"], candidate.source_document, candidate.source_text)
+            merge_source_reference(db, dup["id"], candidate.source_document, candidate.source_text)
             status = "verified"
             reason = "Matches an already-verified fact; new source reference attached (no duplicate row created)."
             vconf = calculate_verification_confidence(candidate, True)
@@ -1019,13 +977,13 @@ def verify_single_candidate(cur: sqlite3.Cursor, candidate: CandidateFact) -> di
                 vconf = calculate_verification_confidence(candidate, True)
 
     # Always store the candidate itself + a full audit-log entry, whatever happened.
-    insert_candidate_fact(cur, candidate, status)
-    insert_verification_log(cur, candidate, status, reason, vconf, conflict_ref)
+    insert_candidate_fact(db, candidate, status)
+    insert_verification_log(db, candidate, status, reason, vconf, conflict_ref)
 
     # Conflicts are stored too (for review) but never merged into the active
     # profile; verified duplicates were already merged into an existing row above.
     if status == "conflict" or (status == "verified" and not already_persisted_as_verified):
-        insert_verified_fact(cur, candidate, vconf, status, reason)
+        insert_verified_fact(db, candidate, vconf, status, reason)
 
     record = {
         "fact_type": candidate.fact_type,
@@ -1057,13 +1015,7 @@ def verify_single_candidate(cur: sqlite3.Cursor, candidate: CandidateFact) -> di
 # ---------------------------------------------------------
 def build_verified_profile() -> dict:
     """The trusted profile: only status='verified' facts, grouped by type."""
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM verified_facts WHERE status = 'verified' ORDER BY id ASC")
-        rows = [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
+    rows = list(get_db().verified_facts.find({"status": "verified"}).sort("_id", ASCENDING))
 
     profile = {"medications": [], "allergies": [], "conditions": [], "lab_values": [], "dates": []}
     key_by_type = {
@@ -1084,20 +1036,14 @@ def build_verified_profile() -> dict:
             "verification_confidence": row["verification_confidence"],
             "status": row["status"],
             "reason": row["reason"],
-            "sources": json.loads(row["source_references"]) if row["source_references"] else [],
+            "sources": row.get("source_references") or [],
         })
     return profile
 
 
 def fetch_unresolved_conflicts() -> List[dict]:
     """status='conflict' rows: evidence-supported facts that clash with the verified profile."""
-    conn = get_db_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM verified_facts WHERE status = 'conflict' ORDER BY id ASC")
-        rows = [dict(r) for r in cur.fetchall()]
-    finally:
-        conn.close()
+    rows = [doc_to_dict(d) for d in get_db().verified_facts.find({"status": "conflict"}).sort("_id", ASCENDING)]
     for r in rows:
         r.pop("source_references", None)
     return rows
@@ -1121,23 +1067,15 @@ def verify_candidate_facts(candidate_facts: List[CandidateFact]) -> dict:
     conflict_out: List[dict] = []
 
     if candidate_facts:
-        conn = get_db_connection()
-        try:
-            cur = conn.cursor()
-            for candidate in candidate_facts:
-                record = verify_single_candidate(cur, candidate)
-                if record["status"] == "verified":
-                    verified_out.append(record)
-                elif record["status"] == "rejected":
-                    rejected_out.append(record)
-                else:
-                    conflict_out.append(record)
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        db = get_db()
+        for candidate in candidate_facts:
+            record = verify_single_candidate(db, candidate)
+            if record["status"] == "verified":
+                verified_out.append(record)
+            elif record["status"] == "rejected":
+                rejected_out.append(record)
+            else:
+                conflict_out.append(record)
 
     return {
         "verified_facts": verified_out,
@@ -1254,8 +1192,14 @@ async def get_patient_profile():
 @app.get("/health")
 async def health_check():
     """Basic health check, also reports whether the spaCy model loaded."""
+    try:
+        get_db().command("ping")
+        mongo_ok = True
+    except Exception:
+        mongo_ok = False
     return {
-        "status": "ok",
+        "status": "ok" if mongo_ok else "degraded",
+        "mongodb_connected": mongo_ok,
         "spacy_model_loaded": nlp is not None,
         "upload_dir": UPLOAD_DIR,
     }

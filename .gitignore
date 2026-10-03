@@ -14,8 +14,14 @@ ENV/
 .idea/
 
 # Environment variables & secrets
+.DS_Store
+data/uploads/
 .env
 
 # Test outputs & temporary images (optional)
 prescription.jpg
 prescriptions_1.jpg
+
+# Mongodb
+mongomeditrace_db_user
+mongoMeditrace1234

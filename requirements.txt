@@ -6,4 +6,6 @@ Pillow==10.4.0
 opencv-python==4.10.0.84
 spacy==3.7.5
 PyMuPDF==1.24.10
-jinja2==3.1.4python --version
+jinja2==3.1.4
+pymongo==4.10.1
+python-dotenv==1.0.1
