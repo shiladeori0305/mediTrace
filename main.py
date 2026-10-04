@@ -46,7 +46,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
-
+from agents.safety_trend_agent import run_safety_and_trend_checks
 
 # =========================================================
 # CONFIGURATION
@@ -1209,6 +1209,16 @@ async def health_check():
 # =========================================================
 # APPLICATION STARTUP
 # =========================================================
+# ==========================================
+# MEMBER 3: SAFETY & TREND AGENTS ENDPOINT
+# ==========================================
+
+
+@app.get("/safety-report")
+def safety_report(patient_id: Optional[str] = None):
+    return run_safety_and_trend_checks(patient_id)
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+

@@ -1,0 +1,154 @@
+{
+  "patient_id": null,
+  "safety_alerts": [
+    {
+      "type": "Allergy Alert",
+      "category": "allergy",
+      "severity": "Critical",
+      "title": "Allergy conflict: amoxicillin",
+      "message": "Patient ko 'penicillin' se allergy hai, lekin amoxicillin prescribed hai.",
+      "evidence": [
+        "amoxicillin",
+        "penicillin"
+      ]
+    },
+    {
+      "type": "Interaction Alert",
+      "category": "interaction",
+      "severity": "High",
+      "title": "Interaction: aspirin + warfarin",
+      "message": "Bleeding risk bahut badh jata hai.",
+      "evidence": [
+        "aspirin",
+        "warfarin"
+      ],
+      "conflicting_drugs": [
+        "aspirin",
+        "warfarin"
+      ]
+    },
+    {
+      "type": "Duplicate Alert",
+      "category": "duplicate",
+      "severity": "High",
+      "title": "Duplicate medicine: paracetamol",
+      "message": "'paracetamol' ek se zyada baar prescribed hai (naam: Crocin, Dolo).",
+      "evidence": [
+        "Crocin",
+        "Dolo"
+      ]
+    },
+    {
+      "type": "Dosage Alert",
+      "category": "dosage",
+      "severity": "High",
+      "title": "Overdose risk: paracetamol",
+      "message": "Total daily dose 4950 mg hai, max safe limit 4000 mg/day.",
+      "evidence": [
+        "4950 mg/day",
+        "limit 4000 mg/day"
+      ]
+    }
+  ],
+  "historical_trends": {
+    "patient_id": null,
+    "total_visits": 3,
+    "trend_alerts": [
+      {
+        "type": "Trend Alert",
+        "category": "trend",
+        "severity": "High",
+        "title": "Blood glucose deteriorating",
+        "message": "Blood glucose lagataar kharab ho raha hai (+75.0% change). Trend: 120 -> 160 -> 210",
+        "evidence": [
+          "2024-01-15: 120",
+          "2024-07-12: 160",
+          "2025-01-10: 210"
+        ]
+      },
+      {
+        "type": "Trend Alert",
+        "category": "trend",
+        "severity": "Moderate",
+        "title": "Hemoglobin deteriorating",
+        "message": "Hemoglobin lagataar kharab ho raha hai (-27.7% change). Trend: 13 -> 11.2 -> 9.4",
+        "evidence": [
+          "2024-01-15: 13",
+          "2024-07-12: 11.2",
+          "2025-01-10: 9.4"
+        ]
+      }
+    ],
+    "timeline": [
+      {
+        "date": "2024-01-15",
+        "type": "medication_start",
+        "description": "Started Metformin 500mg x2/day"
+      },
+      {
+        "date": "2024-01-15",
+        "type": "condition",
+        "description": "Diagnosed: Diabetes"
+      },
+      {
+        "date": "2024-01-15",
+        "type": "lab",
+        "description": "hemoglobin: 13.0 g/dl"
+      },
+      {
+        "date": "2024-01-15",
+        "type": "lab",
+        "description": "glucose: 120.0 mg/dl"
+      },
+      {
+        "date": "2024-07-12",
+        "type": "lab",
+        "description": "hemoglobin: 11.2 g/dl"
+      },
+      {
+        "date": "2024-07-12",
+        "type": "lab",
+        "description": "glucose: 160.0 mg/dl"
+      },
+      {
+        "date": "2025-01-10",
+        "type": "medication_start",
+        "description": "Started Warfarin 5mg x1/day"
+      },
+      {
+        "date": "2025-01-10",
+        "type": "medication_start",
+        "description": "Started Aspirin 75mg x1/day"
+      },
+      {
+        "date": "2025-01-10",
+        "type": "medication_start",
+        "description": "Started Crocin 1000mg x3/day"
+      },
+      {
+        "date": "2025-01-10",
+        "type": "medication_start",
+        "description": "Started Dolo 650mg x3/day"
+      },
+      {
+        "date": "2025-01-10",
+        "type": "medication_start",
+        "description": "Started amoxicillin 625mg x2/day"
+      },
+      {
+        "date": "2025-01-10",
+        "type": "lab",
+        "description": "hemoglobin: 9.4 g/dl"
+      },
+      {
+        "date": "2025-01-10",
+        "type": "lab",
+        "description": "glucose: 210.0 mg/dl"
+      }
+    ]
+  },
+  "risk_level": "critical",
+  "status": "Flagged",
+  "facts_used": 17,
+  "warnings": []
+}
