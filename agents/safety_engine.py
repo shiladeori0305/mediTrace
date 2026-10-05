@@ -112,16 +112,16 @@ DRUG_CLASS = {
 
 # (drugA, drugB) -> (severity, explanation)
 INTERACTIONS = {
-    frozenset({"warfarin", "aspirin"}): ("high", "Bleeding risk bahut badh jata hai."),
-    frozenset({"warfarin", "ibuprofen"}): ("high", "Bleeding risk badhta hai (NSAID + anticoagulant)."),
-    frozenset({"warfarin", "diclofenac"}): ("high", "Bleeding risk badhta hai (NSAID + anticoagulant)."),
-    frozenset({"aspirin", "ibuprofen"}): ("moderate", "Ibuprofen aspirin ka antiplatelet effect kam kar sakta hai; GI bleeding risk."),
+    frozenset({"warfarin", "aspirin"}): ("high", "Greatly increased risk of bleeding."),
+    frozenset({"warfarin", "ibuprofen"}): ("high", "Increased risk of bleeding (NSAID + anticoagulant)."),
+    frozenset({"warfarin", "diclofenac"}): ("high", "Increased risk of bleeding (NSAID + anticoagulant)."),
+    frozenset({"aspirin", "ibuprofen"}): ("moderate", "Ibuprofen may reduce aspirin's antiplatelet effect; risk of GI bleeding."),
     frozenset({"sildenafil", "nitroglycerin"}): ("critical", "Severe hypotension - combination contraindicated."),
-    frozenset({"lisinopril", "spironolactone"}): ("high", "Hyperkalemia (high potassium) ka risk."),
-    frozenset({"simvastatin", "clarithromycin"}): ("high", "Statin level badhta hai -> myopathy/rhabdomyolysis risk."),
-    frozenset({"atorvastatin", "clarithromycin"}): ("high", "Statin level badhta hai -> myopathy risk."),
+    frozenset({"lisinopril", "spironolactone"}): ("high", "Risk of hyperkalemia (high potassium)."),
+    frozenset({"simvastatin", "clarithromycin"}): ("high", "Raises statin levels -> risk of myopathy/rhabdomyolysis."),
+    frozenset({"atorvastatin", "clarithromycin"}): ("high", "Raises statin levels -> risk of myopathy."),
     frozenset({"tramadol", "sertraline"}): ("high", "Serotonin syndrome + seizure risk."),
-    frozenset({"clopidogrel", "omeprazole"}): ("moderate", "Omeprazole clopidogrel ka effect kam kar sakta hai."),
+    frozenset({"clopidogrel", "omeprazole"}): ("moderate", "Omeprazole may reduce the effect of clopidogrel."),
     frozenset({"metformin", "alcohol"}): ("moderate", "Lactic acidosis risk."),
 }
 
@@ -136,12 +136,12 @@ CROSS_REACTIVE = {"penicillin": ["cephalosporin"]}
 
 # drug/class -> conditions where it's risky
 CONDITION_CONFLICTS = {
-    "nsaid": [("kidney", "high", "NSAIDs kidney disease ko worsen kar sakte hain."),
-              ("ulcer", "high", "NSAIDs GI bleeding/ulcer risk badhate hain."),
-              ("gastritis", "moderate", "NSAIDs gastritis worsen kar sakte hain.")],
-    "metformin": [("kidney", "high", "Reduced kidney function me metformin se lactic acidosis ka risk."),
-                  ("liver", "moderate", "Liver disease me metformin careful use hona chahiye."),
-                  ("hepatitis", "moderate", "Hepatitis me metformin careful use hona chahiye.")],
+    "nsaid": [("kidney", "high", "NSAIDs can worsen kidney disease."),
+              ("ulcer", "high", "NSAIDs increase the risk of GI bleeding/ulcers."),
+              ("gastritis", "moderate", "NSAIDs can worsen gastritis.")],
+    "metformin": [("kidney", "high", "Metformin carries a risk of lactic acidosis in reduced kidney function."),
+                  ("liver", "moderate", "Metformin should be used with caution in liver disease."),
+                  ("hepatitis", "moderate", "Metformin should be used with caution in hepatitis.")],
 }
 
 # Lab trend rules: 'worse' = the direction in which a change is bad
@@ -217,8 +217,8 @@ class SafetyAgent:
             if len(raw_names) > 1:
                 out.append(Alert(category="duplicate", severity="high",
                                  title=f"Duplicate medicine: {generic}",
-                                 message=f"'{generic}' ek se zyada baar prescribed hai "
-                                         f"(naam: {', '.join(raw_names)}).",
+                                 message=f"'{generic}' is prescribed more than once "
+                                         f"(names: {', '.join(raw_names)}).",
                                  evidence=raw_names))
         # same class, different drugs (e.g. 2 NSAIDs)
         by_class = {}
@@ -230,7 +230,7 @@ class SafetyAgent:
             if len(drugs) > 1:
                 out.append(Alert(category="duplicate", severity="moderate",
                                  title=f"Same-class therapy: {cls}",
-                                 message=f"Ek hi class ({cls}) ki multiple dawaiyan: {', '.join(drugs)}.",
+                                 message=f"Multiple medicines from the same class ({cls}): {', '.join(drugs)}.",
                                  evidence=drugs))
         return out
 
@@ -247,7 +247,7 @@ class SafetyAgent:
                 sev = "critical" if total > 1.5 * limit else "high"
                 out.append(Alert(category="dosage", severity=sev,
                                  title=f"Overdose risk: {g}",
-                                 message=f"Total daily dose {total:.0f} mg hai, max safe limit {limit} mg/day.",
+                                 message=f"Total daily dose is {total:.0f} mg; maximum safe limit is {limit} mg/day.",
                                  evidence=[f"{total:.0f} mg/day", f"limit {limit} mg/day"]))
         return out
 
@@ -261,8 +261,8 @@ class SafetyAgent:
             if g in allergy_set or (cls and cls in allergy_set):
                 out.append(Alert(category="allergy", severity="critical",
                                  title=f"Allergy conflict: {g}",
-                                 message=f"Patient ko '{', '.join(allergies)}' se allergy hai, "
-                                         f"lekin {g} prescribed hai.",
+                                 message=f"Patient has a documented allergy ({', '.join(allergies)}), "
+                                         f"but {g} is prescribed.",
                                  evidence=[g] + ([cls] if cls else [])))
                 continue
             # cross-reactivity
@@ -270,7 +270,7 @@ class SafetyAgent:
                 if allergy_cls in allergy_set and cls in related:
                     out.append(Alert(category="allergy", severity="moderate",
                                      title=f"Possible cross-reactivity: {g}",
-                                     message=f"{allergy_cls} allergy ke saath {cls} me cross-reaction ho sakta hai.",
+                                     message=f"A {allergy_cls} allergy may cross-react with {cls} drugs.",
                                      evidence=[g, allergy_cls]))
         return out
 
@@ -345,14 +345,14 @@ class TrendAgent:
 
             if crossed:
                 out.append(Alert(category="trend", severity="high",
-                                 title=f"{label} critical level par",
-                                 message=f"{label} ab {last:g} hai (critical threshold {rule['critical']}). Trend: {series}",
+                                 title=f"{label} at critical level",
+                                 message=f"{label} is now {last:g} (critical threshold {rule['critical']}). Trend: {series}",
                                  evidence=[f"{r.date}: {r.value:g}" for r in readings]))
             elif monotonic or worsened_pct >= 20:
                 sev = "high" if worsened_pct >= 30 else "moderate"
                 out.append(Alert(category="trend", severity=sev,
                                  title=f"{label} deteriorating",
-                                 message=f"{label} lagataar kharab ho raha hai ({pct:+.1f}% change). Trend: {series}",
+                                 message=f"{label} is worsening ({pct:+.1f}% change). Trend: {series}",
                                  evidence=[f"{r.date}: {r.value:g}" for r in readings]))
         return out
 

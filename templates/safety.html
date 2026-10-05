@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MediTrace — Safety &amp; Trend Report</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 820px; margin: 40px auto; padding: 0 16px; color: #222; }
+    h1 { font-size: 22px; }
+    h2 { font-size: 17px; margin: 0 0 10px; }
+    .card { border: 1px solid #ddd; border-radius: 8px; padding: 20px; margin-top: 20px; }
+    .hint { color: #666; font-size: 13px; }
+    button { background: #2563eb; color: white; border: none; padding: 10px 18px; border-radius: 6px; cursor: pointer; }
+    button:hover { background: #1d4ed8; }
+    .summary { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 12px; }
+    .pill { padding: 6px 12px; border-radius: 999px; font-size: 13px; background: #eee; }
+    .alert { border-left: 5px solid #999; background: #fafafa; padding: 10px 14px; margin: 10px 0; border-radius: 4px; }
+    .alert.critical, .alert.high { border-color: #dc2626; background: #fef2f2; }
+    .alert.moderate { border-color: #f59e0b; background: #fffbeb; }
+    .alert.low { border-color: #16a34a; background: #f0fdf4; }
+    .alert .title { font-weight: bold; }
+    .alert .meta { font-size: 12px; color: #666; margin-top: 4px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .warn { background: #fffbeb; border: 1px solid #fcd34d; padding: 8px 12px; border-radius: 6px; margin-top: 8px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <h1>MediTrace — Safety &amp; Trend Report</h1>
+  <p class="hint">Reads verified facts from the database and flags drug interactions, allergy risks and trends.</p>
+  <button id="reloadBtn">Refresh report</button>
+
+  <div class="card">
+    <h2>Summary</h2>
+    <div id="summary" class="summary">Loading...</div>
+    <div id="warnings"></div>
+  </div>
+
+  <div class="card">
+    <h2>Safety alerts</h2>
+    <div id="safety">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h2>Trend alerts</h2>
+    <div id="trends">Loading...</div>
+  </div>
+
+  <div class="card">
+    <h2>Timeline</h2>
+    <div id="timeline">Loading...</div>
+  </div>
+
+  <script>
+    function esc(s) {
+      return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+    }
+
+    function renderAlerts(list, emptyText) {
+      if (!list || !list.length) return '<p class="hint">' + emptyText + '</p>';
+      return list.map(function (a) {
+        var sev = String(a.severity || '').toLowerCase();
+        var ev = (a.evidence || []).map(esc).join(' | ');
+        return '<div class="alert ' + esc(sev) + '">' +
+          '<div class="title">' + esc(a.title) + ' (' + esc(a.severity) + ')</div>' +
+          '<div>' + esc(a.message) + '</div>' +
+          (ev ? '<div class="meta">Evidence: ' + ev + '</div>' : '') +
+          '</div>';
+      }).join('');
+    }
+
+    async function loadReport() {
+      try {
+        var res = await fetch('/safety-report');
+        var d = await res.json();
+        var ht = d.historical_trends || {};
+
+        document.getElementById('summary').innerHTML =
+          '<span class="pill">Status: <b>' + esc(d.status) + '</b></span>' +
+          '<span class="pill">Risk level: <b>' + esc(d.risk_level) + '</b></span>' +
+          '<span class="pill">Facts used: <b>' + esc(d.facts_used) + '</b></span>' +
+          '<span class="pill">Documents: <b>' + esc(ht.total_visits) + '</b></span>';
+
+        document.getElementById('warnings').innerHTML =
+          (d.warnings || []).map(function (w) { return '<div class="warn">' + esc(w) + '</div>'; }).join('');
+
+        document.getElementById('safety').innerHTML = renderAlerts(d.safety_alerts, 'No safety alerts.');
+        document.getElementById('trends').innerHTML = renderAlerts(ht.trend_alerts, 'No trend alerts.');
+
+        var tl = ht.timeline || [];
+        document.getElementById('timeline').innerHTML = tl.length
+          ? '<table><tr><th>Date</th><th>Type</th><th>Description</th></tr>' +
+            tl.map(function (e) {
+              return '<tr><td>' + esc(e.date || '-') + '</td><td>' + esc(e.type) + '</td><td>' + esc(e.description) + '</td></tr>';
+            }).join('') + '</table>'
+          : '<p class="hint">No timeline events yet.</p>';
+      } catch (err) {
+        document.getElementById('summary').textContent = 'Error: ' + err;
+      }
+    }
+
+    document.getElementById('reloadBtn').addEventListener('click', loadReport);
+    loadReport();
+  </script>
+</body>
+</html>

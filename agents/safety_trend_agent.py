@@ -158,12 +158,12 @@ def _load_facts(patient_id):
             if col.count_documents({"patient_id": patient_id}, limit=1):
                 query["patient_id"] = patient_id
             else:
-                warnings.append("verified_facts me patient_id field nahi mila; saare facts "
-                                "ek hi patient ke maan ke use kiye gaye.")
+                warnings.append("verified_facts has no patient_id field; all facts were "
+                                "treated as belonging to a single patient.")
         return list(col.find(query)), warnings
     except Exception as e:  # noqa: BLE001
         log.exception("MongoDB read failed")
-        return [], [f"MongoDB unavailable ({type(e).__name__}); safety/trend history check nahi ho paya."]
+        return [], [f"MongoDB unavailable ({type(e).__name__}); safety/trend history check could not be performed."]
 
 
 def _document_dates(facts) -> dict:
@@ -201,7 +201,7 @@ def build_profile(patient_id, facts, current_medications=None, extra_allergies=N
                 category="verification_conflict",
                 severity="high" if ftype in ("allergy", "medication") else "moderate",
                 title=f"Unresolved conflict: {ftype} '{val}'",
-                message=f.get("reason") or "Verified records me contradiction hai; manual review chahiye.",
+                message=f.get("reason") or "Verified records contain a contradiction; manual review required.",
                 evidence=[x for x in (f.get("source_document"), f.get("source_text")) if x]))
 
         if ftype == "allergy":

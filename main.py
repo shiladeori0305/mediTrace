@@ -1212,11 +1212,15 @@ async def health_check():
 # ==========================================
 # MEMBER 3: SAFETY & TREND AGENTS ENDPOINT
 # ==========================================
-
-
 @app.get("/safety-report")
 def safety_report(patient_id: Optional[str] = None):
     return run_safety_and_trend_checks(patient_id)
+
+
+@app.get("/safety", response_class=HTMLResponse)
+async def safety_page(request: Request):
+    return templates.TemplateResponse("safety.html", {"request": request})
+
 
 if __name__ == "__main__":
     import uvicorn

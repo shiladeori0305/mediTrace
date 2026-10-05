@@ -6,7 +6,7 @@
       "category": "allergy",
       "severity": "Critical",
       "title": "Allergy conflict: amoxicillin",
-      "message": "Patient ko 'penicillin' se allergy hai, lekin amoxicillin prescribed hai.",
+      "message": "Patient has a documented allergy (penicillin), but amoxicillin is prescribed.",
       "evidence": [
         "amoxicillin",
         "penicillin"
@@ -17,7 +17,7 @@
       "category": "interaction",
       "severity": "High",
       "title": "Interaction: aspirin + warfarin",
-      "message": "Bleeding risk bahut badh jata hai.",
+      "message": "Greatly increased risk of bleeding.",
       "evidence": [
         "aspirin",
         "warfarin"
@@ -32,7 +32,7 @@
       "category": "duplicate",
       "severity": "High",
       "title": "Duplicate medicine: paracetamol",
-      "message": "'paracetamol' ek se zyada baar prescribed hai (naam: Crocin, Dolo).",
+      "message": "'paracetamol' is prescribed more than once (names: Crocin, Dolo).",
       "evidence": [
         "Crocin",
         "Dolo"
@@ -43,7 +43,7 @@
       "category": "dosage",
       "severity": "High",
       "title": "Overdose risk: paracetamol",
-      "message": "Total daily dose 4950 mg hai, max safe limit 4000 mg/day.",
+      "message": "Total daily dose is 4950 mg; maximum safe limit is 4000 mg/day.",
       "evidence": [
         "4950 mg/day",
         "limit 4000 mg/day"
@@ -59,7 +59,7 @@
         "category": "trend",
         "severity": "High",
         "title": "Blood glucose deteriorating",
-        "message": "Blood glucose lagataar kharab ho raha hai (+75.0% change). Trend: 120 -> 160 -> 210",
+        "message": "Blood glucose is worsening (+75.0% change). Trend: 120 -> 160 -> 210",
         "evidence": [
           "2024-01-15: 120",
           "2024-07-12: 160",
@@ -71,7 +71,7 @@
         "category": "trend",
         "severity": "Moderate",
         "title": "Hemoglobin deteriorating",
-        "message": "Hemoglobin lagataar kharab ho raha hai (-27.7% change). Trend: 13 -> 11.2 -> 9.4",
+        "message": "Hemoglobin is worsening (-27.7% change). Trend: 13 -> 11.2 -> 9.4",
         "evidence": [
           "2024-01-15: 13",
           "2024-07-12: 11.2",
