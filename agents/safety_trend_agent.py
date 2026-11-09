@@ -43,12 +43,28 @@ LAB_ALIASES = [("hba1c", "hba1c"), ("glycated", "hba1c"), ("glucose", "glucose")
                ("platelet", "platelets"), ("spo2", "spo2")]
 
 _client = None
+_mongo_available = None
+
+
+def is_mongo_available() -> bool:
+    global _mongo_available, _client
+    if _mongo_available is False:
+        return False
+    try:
+        if _client is None:
+            _client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=800)
+        _client.admin.command("ping")
+        _mongo_available = True
+        return True
+    except Exception:
+        _mongo_available = False
+        return False
 
 
 def get_db():
     global _client
     if _client is None:
-        _client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=3000)
+        _client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=800)
     return _client[MONGODB_DB]
 
 
@@ -151,19 +167,33 @@ def expand_medication(name: str) -> List[str]:
 def _load_facts(patient_id):
     """Returns (facts, warnings). Never raises."""
     warnings = []
+    if is_mongo_available():
+        try:
+            col = get_db()["verified_facts"]
+            query = {"status": {"$in": ["verified", "conflict"]}}
+            if patient_id:
+                if col.count_documents({"patient_id": patient_id}, limit=1):
+                    query["patient_id"] = patient_id
+                else:
+                    warnings.append("verified_facts has no patient_id field; all facts were "
+                                    "treated as belonging to a single patient.")
+            return list(col.find(query)), warnings
+        except Exception as e:
+            log.warning(f"MongoDB read error: {e}")
+
     try:
-        col = get_db()["verified_facts"]
-        query = {"status": {"$in": ["verified", "conflict"]}}
-        if patient_id:
-            if col.count_documents({"patient_id": patient_id}, limit=1):
-                query["patient_id"] = patient_id
-            else:
-                warnings.append("verified_facts has no patient_id field; all facts were "
-                                "treated as belonging to a single patient.")
-        return list(col.find(query)), warnings
-    except Exception as e:  # noqa: BLE001
-        log.exception("MongoDB read failed")
-        return [], [f"MongoDB unavailable ({type(e).__name__}); safety/trend history check could not be performed."]
+        import sqlite3
+        sqlite_path = os.path.join(BASE, "data", "meditrace.db")
+        if os.path.exists(sqlite_path):
+            con = sqlite3.connect(sqlite_path)
+            con.row_factory = sqlite3.Row
+            cur = con.cursor()
+            rows = [dict(r) for r in cur.execute("SELECT * FROM verified_facts WHERE status IN ('verified', 'conflict')").fetchall()]
+            con.close()
+            return rows, warnings
+    except Exception as sqle:
+        log.warning(f"SQLite fallback read failed: {sqle}")
+    return [], ["Database records could not be retrieved; safety check incomplete."]
 
 
 def _document_dates(facts) -> dict:

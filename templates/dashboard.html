@@ -1,0 +1,1001 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MediTrace — Multi-Agent Clinical Intelligence Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #2563eb;
+      --primary-dark: #1d4ed8;
+      --primary-light: #eff6ff;
+      --success: #16a34a;
+      --success-light: #f0fdf4;
+      --warning: #f59e0b;
+      --warning-light: #fffbeb;
+      --danger: #dc2626;
+      --danger-light: #fef2f2;
+      --slate-50: #f8fafc;
+      --slate-100: #f1f5f9;
+      --slate-200: #e2e8f0;
+      --slate-300: #cbd5e1;
+      --slate-600: #475569;
+      --slate-700: #334155;
+      --slate-800: #1e293b;
+      --slate-900: #0f172a;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #f8fafc;
+      color: var(--slate-800);
+      line-height: 1.5;
+      padding-bottom: 60px;
+    }
+
+    header {
+      background: white;
+      border-bottom: 1px solid var(--slate-200);
+      padding: 16px 32px;
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.02);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo-badge {
+      background: linear-gradient(135deg, #2563eb, #3b82f6);
+      color: white;
+      font-weight: 700;
+      font-size: 18px;
+      padding: 8px 14px;
+      border-radius: 8px;
+      letter-spacing: -0.5px;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--slate-900);
+    }
+    .brand-subtitle {
+      font-size: 12px;
+      color: var(--slate-600);
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .pill {
+      font-size: 12px;
+      font-weight: 600;
+      padding: 4px 10px;
+      border-radius: 9999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .pill-green { background: #dcfce7; color: #15803d; }
+    .pill-red { background: #fee2e2; color: #b91c1c; }
+    .pill-blue { background: var(--primary-light); color: var(--primary); }
+
+    .container {
+      max-width: 1280px;
+      margin: 24px auto;
+      padding: 0 24px;
+    }
+
+    /* Pipeline Status Ribbon */
+    .pipeline-stepper {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .step-card {
+      background: white;
+      border: 1px solid var(--slate-200);
+      border-radius: 10px;
+      padding: 14px 16px;
+      position: relative;
+      transition: all 0.2s;
+    }
+    .step-card.active {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(37,99,235,0.1);
+    }
+    .step-num {
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--primary);
+      margin-bottom: 4px;
+    }
+    .step-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--slate-900);
+    }
+    .step-desc {
+      font-size: 12px;
+      color: var(--slate-600);
+      margin-top: 2px;
+    }
+
+    /* Control Panel */
+    .control-panel {
+      background: white;
+      border: 1px solid var(--slate-200);
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .upload-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .file-drop-area {
+      flex: 1;
+      min-width: 280px;
+      border: 2px dashed var(--slate-300);
+      border-radius: 8px;
+      padding: 14px 20px;
+      text-align: center;
+      background: var(--slate-50);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      transition: border-color 0.2s;
+    }
+    .file-drop-area:hover { border-color: var(--primary); }
+
+    .btn {
+      font-family: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      padding: 10px 18px;
+      border-radius: 8px;
+      border: none;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.2s;
+    }
+    .btn-primary { background: var(--primary); color: white; }
+    .btn-primary:hover { background: var(--primary-dark); }
+    .btn-secondary { background: var(--slate-100); color: var(--slate-700); border: 1px solid var(--slate-300); }
+    .btn-secondary:hover { background: var(--slate-200); }
+    .btn-danger { background: var(--danger); color: white; }
+    .btn-danger:hover { background: #b91c1c; }
+
+    .sample-buttons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .sample-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--slate-600);
+    }
+    .chip-btn {
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--slate-100);
+      border: 1px solid var(--slate-200);
+      padding: 6px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .chip-btn:hover {
+      background: var(--primary-light);
+      border-color: var(--primary);
+      color: var(--primary);
+    }
+
+    /* Tabs */
+    .tabs-nav {
+      display: flex;
+      border-bottom: 2px solid var(--slate-200);
+      margin-bottom: 24px;
+      gap: 24px;
+    }
+    .tab-item {
+      padding: 12px 4px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--slate-600);
+      cursor: pointer;
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+    }
+    .tab-item.active {
+      color: var(--primary);
+      border-bottom-color: var(--primary);
+    }
+
+    /* Sections */
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+    }
+
+    .card {
+      background: white;
+      border: 1px solid var(--slate-200);
+      border-radius: 12px;
+      padding: 20px;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    }
+    .card-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--slate-900);
+      margin-bottom: 12px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Emergency Summary View */
+    .triage-banner {
+      border-radius: 12px;
+      padding: 20px 24px;
+      margin-bottom: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: white;
+    }
+    .triage-red { background: linear-gradient(135deg, #dc2626, #ef4444); }
+    .triage-yellow { background: linear-gradient(135deg, #d97706, #f59e0b); }
+    .triage-green { background: linear-gradient(135deg, #16a34a, #22c55e); }
+
+    .triage-badge {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: 1px;
+    }
+    .triage-desc {
+      font-size: 14px;
+      opacity: 0.95;
+      margin-top: 4px;
+    }
+
+    .handover-box {
+      background: #eff6ff;
+      border-left: 5px solid #2563eb;
+      padding: 16px 20px;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 20px;
+      font-size: 15px;
+      color: #1e3a8a;
+    }
+    .handover-title {
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+      color: #1d4ed8;
+    }
+
+    .caution-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .caution-item {
+      padding: 12px 16px;
+      border-radius: 8px;
+      background: #fef2f2;
+      border: 1px solid #fee2e2;
+      border-left: 4px solid #dc2626;
+      font-size: 13px;
+      color: #991b1b;
+      display: flex;
+      gap: 12px;
+      align-items: flex-start;
+    }
+
+    /* Tables */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      padding: 10px 12px;
+      background: var(--slate-50);
+      color: var(--slate-600);
+      font-weight: 600;
+      border-bottom: 1px solid var(--slate-200);
+    }
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--slate-200);
+    }
+    tr:last-child td { border-bottom: none; }
+
+    .tag {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 8px;
+      border-radius: 4px;
+      display: inline-block;
+    }
+    .tag-verified { background: #dcfce7; color: #166534; }
+    .tag-candidate { background: #fef3c7; color: #92400e; }
+    .tag-conflict { background: #fee2e2; color: #991b1b; }
+    .tag-rejected { background: #f1f5f9; color: #475569; }
+
+    /* Alert cards */
+    .alert-card {
+      border-left: 4px solid;
+      padding: 12px 16px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      font-size: 13px;
+    }
+    .alert-Critical, .alert-High { border-color: #dc2626; background: #fef2f2; color: #991b1b; }
+    .alert-Moderate { border-color: #f59e0b; background: #fffbeb; color: #92400e; }
+    .alert-Low { border-color: #16a34a; background: #f0fdf4; color: #166534; }
+
+    .alert-title { font-weight: 700; margin-bottom: 2px; }
+    .alert-meta { font-size: 11px; opacity: 0.85; margin-top: 4px; }
+
+    .evidence-text {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      background: #f1f5f9;
+      padding: 4px 8px;
+      border-radius: 4px;
+      display: inline-block;
+      margin-top: 4px;
+      color: var(--slate-700);
+    }
+
+    /* Print styles for Emergency Card */
+    @media print {
+      body { background: white; padding: 0; }
+      header, .control-panel, .pipeline-stepper, .tabs-nav, .no-print { display: none !important; }
+      #tab-emergency { display: block !important; }
+      .card { border: 1px solid #000; box-shadow: none; page-break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="brand">
+      <div class="logo-badge">MT</div>
+      <div>
+        <div class="brand-title">MediTrace Clinical Engine</div>
+        <div class="brand-subtitle">Multi-Agent Verified Healthcare Information Pipeline</div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <span class="pill pill-green" id="dbStatusPill">● System Online</span>
+      <span class="pill pill-blue" id="activePatientPill">Patient: PT-DEMO-01</span>
+      <button class="btn btn-secondary no-print" onclick="window.print()">🖨️ Print Emergency Card</button>
+    </div>
+  </header>
+
+  <div class="container">
+
+    <!-- Pipeline Overview Header -->
+    <div class="pipeline-stepper">
+      <div class="step-card active" id="step1Card">
+        <div class="step-num">Member 1</div>
+        <div class="step-name">Document Agent</div>
+        <div class="step-desc">OCR & Medical NER (Candidate Facts)</div>
+      </div>
+      <div class="step-card active" id="step2Card">
+        <div class="step-num">Member 2</div>
+        <div class="step-name">Verification Agent</div>
+        <div class="step-desc">Evidence Grounding & Verified Profile</div>
+      </div>
+      <div class="step-card active" id="step3Card">
+        <div class="step-num">Member 3</div>
+        <div class="step-name">Safety & Trend Agent</div>
+        <div class="step-desc">Drug Interactions & Deterioration</div>
+      </div>
+      <div class="step-card active" id="step4Card">
+        <div class="step-num">Member 4</div>
+        <div class="step-name">Emergency Agent</div>
+        <div class="step-desc">Triage Summary & Clinical Handover</div>
+      </div>
+    </div>
+
+    <!-- Controls / Ingestion -->
+    <div class="control-panel no-print">
+      <div class="upload-row">
+        <div class="file-drop-area" onclick="document.getElementById('fileUploadInput').click()">
+          <span style="font-size: 20px;">📄</span>
+          <div>
+            <strong id="uploadLabel">Upload Medical Document</strong>
+            <div style="font-size: 11px; color: var(--slate-600);">PDF, PNG, JPG (Prescriptions, Lab Reports, Discharge)</div>
+          </div>
+          <input type="file" id="fileUploadInput" accept=".pdf,.png,.jpg,.jpeg" style="display: none;" onchange="handleFileSelected(event)">
+        </div>
+
+        <button class="btn btn-primary" id="runPipelineBtn" onclick="runFullPipeline()">
+          <span>⚡ Run End-to-End Pipeline</span>
+        </button>
+
+        <button class="btn btn-secondary" onclick="loadSample('prescription_2025_01.pdf')">
+          <span>🔄 Reload Verified Profile</span>
+        </button>
+      </div>
+
+      <div class="sample-buttons">
+        <span class="sample-label">Test with pre-loaded clinical reports:</span>
+        <button class="chip-btn" style="background: #eff6ff; border-color: #2563eb; color: #1d4ed8; font-weight: 600;" onclick="loadSample('comprehensive_test_prescription.pdf')">⭐ Full 4-Agent Test Prescription (Nov 2026)</button>
+        <button class="chip-btn" onclick="loadSample('report_2024_01.pdf')">📄 Jan 2024 (Diabetes & Metformin)</button>
+        <button class="chip-btn" onclick="loadSample('report_2024_07.pdf')">📄 Jul 2024 (Worsening HbA1c/Glucose)</button>
+        <button class="chip-btn" onclick="loadSample('prescription_2025_01.pdf')">📄 Jan 2025 (Warfarin + Aspirin + Penicillin Allergy)</button>
+      </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="tabs-nav no-print">
+      <div class="tab-item active" onclick="switchTab('emergency')">
+        <span>🚨 Member 4: Emergency Handover</span>
+      </div>
+      <div class="tab-item" onclick="switchTab('safety')">
+        <span>🛡️ Member 3: Safety & Trends</span>
+      </div>
+      <div class="tab-item" onclick="switchTab('verification')">
+        <span>🔍 Member 2: Verified Profile</span>
+      </div>
+      <div class="tab-item" onclick="switchTab('candidate')">
+        <span>📑 Member 1: Candidate Facts & OCR</span>
+      </div>
+    </div>
+
+    <!-- TAB 1: EMERGENCY SUMMARY (MEMBER 4) -->
+    <div id="tab-emergency" class="tab-content active">
+      <div id="triageBanner" class="triage-banner triage-red">
+        <div>
+          <div class="triage-badge" id="triageLevel">TRIAGE: RED / CRITICAL</div>
+          <div class="triage-desc" id="triageDesc">Immediate medical attention required. Contraindicated medications and allergies detected.</div>
+        </div>
+        <div style="text-align: right;">
+          <div style="font-size: 12px; opacity: 0.9;">Generated by Member 4 Agent</div>
+          <div style="font-weight: 700; font-size: 13px;" id="summaryTimestamp">Live Verified Stream</div>
+        </div>
+      </div>
+
+      <div class="handover-box">
+        <div class="handover-title">15-Second Clinical ER Handover Briefing</div>
+        <p id="handoverNarrative">Loading patient records...</p>
+      </div>
+
+      <div class="grid-2" style="margin-bottom: 20px;">
+        <div class="card">
+          <div class="card-title">
+            <span>Critical Red Flags & Resuscitation Cautions</span>
+            <span class="pill pill-red" id="cautionsCountPill">0 Alerts</span>
+          </div>
+          <div class="caution-list" id="cautionsList">
+            <div style="color: var(--slate-600); font-size: 13px;">No critical red flags.</div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Confirmed Allergies & Conditions</span>
+          </div>
+          <div style="margin-bottom: 14px;">
+            <div style="font-size: 12px; font-weight: 600; color: var(--slate-600); margin-bottom: 6px;">DOCUMENTED ALLERGIES</div>
+            <div id="emergencyAllergiesList" style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <span class="pill pill-red">Loading...</span>
+            </div>
+          </div>
+          <div>
+            <div style="font-size: 12px; font-weight: 600; color: var(--slate-600); margin-bottom: 6px;">DIAGNOSED CONDITIONS</div>
+            <div id="emergencyConditionsList" style="display: flex; gap: 8px; flex-wrap: wrap;">
+              <span class="pill pill-blue">Loading...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Active Verified Medications</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Drug Name</th>
+                <th>Dosage</th>
+                <th>Frequency</th>
+                <th>Verification</th>
+              </tr>
+            </thead>
+            <tbody id="emergencyMedsTable">
+              <tr><td colspan="4">Loading medications...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Recent Vitals & Lab Results</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Test</th>
+                <th>Value</th>
+                <th>Reference</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="emergencyLabsTable">
+              <tr><td colspan="4">Loading lab values...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 2: SAFETY & TRENDS (MEMBER 3) -->
+    <div id="tab-safety" class="tab-content">
+      <div class="grid-2" style="margin-bottom: 20px;">
+        <div class="card">
+          <div class="card-title">
+            <span>Medication Safety Alerts</span>
+            <span class="pill pill-red" id="safetyAlertsPill">0 Alerts</span>
+          </div>
+          <div id="safetyAlertsList">Loading safety engine...</div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Historical Deterioration & Lab Trends</span>
+            <span class="pill pill-blue" id="trendAlertsPill">0 Trends</span>
+          </div>
+          <div id="trendAlertsList">Loading trends...</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Chronological Medical Timeline</div>
+        <div id="timelineContainer" style="display: flex; flex-direction: column; gap: 12px;">
+          Loading timeline...
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 3: VERIFICATION (MEMBER 2) -->
+    <div id="tab-verification" class="tab-content">
+      <div class="card" style="margin-bottom: 20px;">
+        <div class="card-title">
+          <span>Verified Patient Profile (Trusted Layer)</span>
+          <span class="pill pill-green">Evidence Grounded</span>
+        </div>
+        <p style="font-size: 13px; color: var(--slate-600); margin-bottom: 14px;">
+          Only facts whose source text was verified and have no unresolved contradictions enter this profile.
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Value</th>
+              <th>Dosage / Freq / Val</th>
+              <th>Confidence</th>
+              <th>Status</th>
+              <th>Reason</th>
+            </tr>
+          </thead>
+          <tbody id="verifiedProfileTable">
+            <tr><td colspan="6">Loading verified facts...</td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>Unresolved Contradictions & Conflict Audit</span>
+        </div>
+        <div id="conflictsContainer" style="font-size: 13px; color: var(--slate-600);">
+          No active conflicts found.
+        </div>
+      </div>
+    </div>
+
+    <!-- TAB 4: CANDIDATE FACTS & OCR (MEMBER 1) -->
+    <div id="tab-candidate" class="tab-content">
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-title">Extracted Candidate Facts (Unverified)</div>
+          <table>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Entity</th>
+                <th>Confidence</th>
+                <th>Evidence Snippet</th>
+              </tr>
+            </thead>
+            <tbody id="candidateFactsTable">
+              <tr><td colspan="4">No candidate facts extracted yet. Upload a document or run a sample.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Document Text Extraction</div>
+          <div style="font-size: 12px; color: var(--slate-600); margin-bottom: 8px;">Raw text processed by Member 1 Document Agent:</div>
+          <pre id="extractedRawText" style="background: var(--slate-50); border: 1px solid var(--slate-200); border-radius: 8px; padding: 14px; font-family: 'JetBrains Mono', monospace; font-size: 12px; max-height: 400px; overflow-y: auto; white-space: pre-wrap;">Upload or run a sample document to inspect OCR text.</pre>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    let currentSelectedFile = null;
+
+    function switchTab(tabId) {
+      document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.tab-item').forEach(el => el.classList.remove('active'));
+      
+      const target = document.getElementById('tab-' + tabId);
+      if (target) target.classList.add('active');
+
+      const tabs = {
+        'emergency': 0,
+        'safety': 1,
+        'verification': 2,
+        'candidate': 3
+      };
+      const items = document.querySelectorAll('.tab-item');
+      if (items[tabs[tabId]]) items[tabs[tabId]].classList.add('active');
+    }
+
+    function handleFileSelected(event) {
+      if (event.target.files && event.target.files.length > 0) {
+        currentSelectedFile = event.target.files[0];
+        document.getElementById('uploadLabel').textContent = currentSelectedFile.name;
+        document.getElementById('uploadLabel').style.color = '#2563eb';
+      }
+    }
+
+    async function loadInitialData() {
+      try {
+        const res = await fetch('/emergency-summary');
+        const emergencyData = await res.json();
+        renderEmergencySummary(emergencyData);
+
+        const safetyRes = await fetch('/safety-report');
+        const safetyData = await safetyRes.json();
+        renderSafetyReport(safetyData);
+
+        const profileRes = await fetch('/patient/profile');
+        const profileData = await profileRes.json();
+        renderVerifiedProfile(profileData);
+      } catch (err) {
+        console.error('Initial data load failed:', err);
+      }
+    }
+
+    function renderEmergencySummary(data) {
+      if (!data) return;
+      
+      // Patient and Timestamp
+      if (data.patient_id) {
+        document.getElementById('activePatientPill').textContent = 'Patient: ' + data.patient_id;
+      }
+      if (data.generated_at) {
+        document.getElementById('summaryTimestamp').textContent = new Date(data.generated_at).toLocaleTimeString();
+      }
+
+      // Triage
+      const banner = document.getElementById('triageBanner');
+      const level = document.getElementById('triageLevel');
+      const desc = document.getElementById('triageDesc');
+      level.textContent = 'TRIAGE: ' + (data.triage_level || 'GREEN');
+      desc.textContent = data.triage_description || '';
+      banner.className = 'triage-banner ' + (data.triage_level === 'RED' ? 'triage-red' : (data.triage_level === 'YELLOW' ? 'triage-yellow' : 'triage-green'));
+
+      // Handover
+      document.getElementById('handoverNarrative').textContent = data.clinical_handover || 'No patient summary generated.';
+
+      // Cautions
+      const cautionsList = document.getElementById('cautionsList');
+      cautionsList.innerHTML = '';
+      const cautions = data.resuscitation_cautions || [];
+      document.getElementById('cautionsCountPill').textContent = cautions.length + ' Alerts';
+      if (cautions.length === 0) {
+        cautionsList.innerHTML = '<div style="color: var(--slate-600); font-size: 13px;">No critical resuscitation red flags.</div>';
+      } else {
+        cautions.forEach(c => {
+          const div = document.createElement('div');
+          div.className = 'caution-item';
+          div.innerHTML = `<span>⚠️</span><div>${c}</div>`;
+          cautionsList.appendChild(div);
+        });
+      }
+
+      // Allergies
+      const allergiesContainer = document.getElementById('emergencyAllergiesList');
+      allergiesContainer.innerHTML = '';
+      const allergies = data.verified_allergies || [];
+      if (allergies.length === 0) {
+        allergiesContainer.innerHTML = '<span class="pill pill-green">No Known Drug Allergies</span>';
+      } else {
+        allergies.forEach(a => {
+          allergiesContainer.innerHTML += `<span class="pill pill-red">⚠️ ${a}</span>`;
+        });
+      }
+
+      // Conditions
+      const conditionsContainer = document.getElementById('emergencyConditionsList');
+      conditionsContainer.innerHTML = '';
+      const conds = data.chronic_conditions || [];
+      if (conds.length === 0) {
+        conditionsContainer.innerHTML = '<span class="pill pill-blue">None documented</span>';
+      } else {
+        conds.forEach(c => {
+          conditionsContainer.innerHTML += `<span class="pill pill-blue">🩺 ${c}</span>`;
+        });
+      }
+
+      // Meds Table
+      const medsTbody = document.getElementById('emergencyMedsTable');
+      medsTbody.innerHTML = '';
+      const meds = data.active_medications || [];
+      if (meds.length === 0) {
+        medsTbody.innerHTML = '<tr><td colspan="4" style="color: var(--slate-600);">No active medications on record.</td></tr>';
+      } else {
+        meds.forEach(m => {
+          medsTbody.innerHTML += `
+            <tr>
+              <td><strong>${m.name}</strong></td>
+              <td>${m.dosage || '-'}</td>
+              <td>${m.frequency || '-'}</td>
+              <td><span class="tag tag-verified">${Math.round((m.confidence || 0.95) * 100)}% Verified</span></td>
+            </tr>
+          `;
+        });
+      }
+
+      // Labs Table
+      const labsTbody = document.getElementById('emergencyLabsTable');
+      labsTbody.innerHTML = '';
+      const labs = data.recent_labs || [];
+      if (labs.length === 0) {
+        labsTbody.innerHTML = '<tr><td colspan="4" style="color: var(--slate-600);">No lab tests recorded.</td></tr>';
+      } else {
+        labs.forEach(l => {
+          let badge = `<span class="tag tag-verified">${l.status}</span>`;
+          if (l.category === 'critical') badge = `<span class="tag tag-conflict">${l.status}</span>`;
+          else if (l.category === 'warning') badge = `<span class="tag tag-candidate">${l.status}</span>`;
+          labsTbody.innerHTML += `
+            <tr>
+              <td><strong>${l.test}</strong></td>
+              <td>${l.value}</td>
+              <td style="color: var(--slate-600);">${l.reference_range || '-'}</td>
+              <td>${badge}</td>
+            </tr>
+          `;
+        });
+      }
+    }
+
+    function renderSafetyReport(report) {
+      if (!report) return;
+      const alerts = report.safety_alerts || [];
+      const trends = report.historical_trends?.trend_alerts || [];
+
+      document.getElementById('safetyAlertsPill').textContent = alerts.length + ' Alerts';
+      document.getElementById('trendAlertsPill').textContent = trends.length + ' Trends';
+
+      const sList = document.getElementById('safetyAlertsList');
+      sList.innerHTML = '';
+      if (alerts.length === 0) {
+        sList.innerHTML = '<div style="color: var(--success); font-weight: 500;">✅ No safety contraindications flagged.</div>';
+      } else {
+        alerts.forEach(a => {
+          sList.innerHTML += `
+            <div class="alert-card alert-${a.severity}">
+              <div class="alert-title">[${a.severity}] ${a.title}</div>
+              <div>${a.message}</div>
+              <div class="alert-meta">Evidence: ${(a.evidence || []).join(', ')}</div>
+            </div>
+          `;
+        });
+      }
+
+      const tList = document.getElementById('trendAlertsList');
+      tList.innerHTML = '';
+      if (trends.length === 0) {
+        tList.innerHTML = '<div style="color: var(--slate-600);">No deterioration trends observed.</div>';
+      } else {
+        trends.forEach(t => {
+          tList.innerHTML += `
+            <div class="alert-card alert-${t.severity}">
+              <div class="alert-title">[${t.severity}] ${t.title}</div>
+              <div>${t.message}</div>
+              <div class="alert-meta">Progression: ${(t.evidence || []).join(' → ')}</div>
+            </div>
+          `;
+        });
+      }
+
+      // Timeline
+      const timeline = report.historical_trends?.timeline || [];
+      const tlContainer = document.getElementById('timelineContainer');
+      tlContainer.innerHTML = '';
+      if (timeline.length === 0) {
+        tlContainer.innerHTML = '<div style="color: var(--slate-600);">No timeline history recorded.</div>';
+      } else {
+        timeline.forEach(item => {
+          tlContainer.innerHTML += `
+            <div style="display: flex; gap: 14px; align-items: baseline; border-left: 2px solid var(--primary); padding-left: 14px;">
+              <strong style="color: var(--primary); font-size: 13px; min-width: 90px;">${item.date || 'Visit'}</strong>
+              <span class="tag tag-verified">${item.type}</span>
+              <span style="font-size: 13px;">${item.description}</span>
+            </div>
+          `;
+        });
+      }
+    }
+
+    function renderVerifiedProfile(data) {
+      if (!data) return;
+      const profile = data.profile || data;
+      const tbody = document.getElementById('verifiedProfileTable');
+      tbody.innerHTML = '';
+
+      let count = 0;
+      for (const [key, items] of Object.entries(profile)) {
+        if (!Array.isArray(items)) continue;
+        items.forEach(item => {
+          count++;
+          tbody.innerHTML += `
+            <tr>
+              <td><span class="tag tag-verified">${key.replace('s', '')}</span></td>
+              <td><strong>${item.value}</strong></td>
+              <td>${item.dosage || item.lab_value || item.frequency || '-'}</td>
+              <td>${Math.round((item.verification_confidence || 0.9) * 100)}%</td>
+              <td><span class="tag tag-verified">${item.status}</span></td>
+              <td style="color: var(--slate-600); font-size: 12px;">${item.reason || '-'}</td>
+            </tr>
+          `;
+        });
+      }
+
+      if (count === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" style="color: var(--slate-600);">No verified facts currently saved.</td></tr>';
+      }
+    }
+
+    async function loadSample(sampleName) {
+      try {
+        const btn = event.target;
+        const originalText = btn.textContent;
+        btn.textContent = 'Processing...';
+
+        const res = await fetch('/pipeline/sample/' + encodeURIComponent(sampleName));
+        const data = await res.json();
+        btn.textContent = originalText;
+
+        if (data.emergency_summary) renderEmergencySummary(data.emergency_summary);
+        if (data.safety_report) renderSafetyReport(data.safety_report);
+        if (data.verified_profile) renderVerifiedProfile(data.verified_profile);
+        if (data.candidate_facts) renderCandidateFacts(data.candidate_facts, data.raw_text);
+
+        switchTab('emergency');
+      } catch (err) {
+        alert('Failed to load sample: ' + err);
+      }
+    }
+
+    function renderCandidateFacts(facts, rawText) {
+      const tbody = document.getElementById('candidateFactsTable');
+      tbody.innerHTML = '';
+      if (!facts || facts.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4">No facts extracted.</td></tr>';
+      } else {
+        facts.forEach(f => {
+          tbody.innerHTML += `
+            <tr>
+              <td><span class="tag tag-candidate">${f.fact_type}</span></td>
+              <td><strong>${f.value}</strong> ${f.dosage ? '(' + f.dosage + ')' : ''}</td>
+              <td>${Math.round((f.extraction_confidence || 0.8) * 100)}%</td>
+              <td><span class="evidence-text">${f.source_text}</span></td>
+            </tr>
+          `;
+        });
+      }
+
+      if (rawText) {
+        document.getElementById('extractedRawText').textContent = rawText;
+      }
+    }
+
+    async function runFullPipeline() {
+      if (!currentSelectedFile) {
+        alert('Please select a file to process first, or click one of the sample buttons.');
+        return;
+      }
+
+      const btn = document.getElementById('runPipelineBtn');
+      btn.innerHTML = '<span>⏳ Running 4-Agent Pipeline...</span>';
+      btn.disabled = true;
+
+      const formData = new FormData();
+      formData.append('file', currentSelectedFile);
+
+      try {
+        const res = await fetch('/pipeline/run', {
+          method: 'POST',
+          body: formData
+        });
+        const result = await res.json();
+        btn.innerHTML = '<span>⚡ Run End-to-End Pipeline</span>';
+        btn.disabled = false;
+
+        if (result.emergency_summary) renderEmergencySummary(result.emergency_summary);
+        if (result.safety_report) renderSafetyReport(result.safety_report);
+        if (result.verified_profile) renderVerifiedProfile(result.verified_profile);
+        if (result.candidate_facts) renderCandidateFacts(result.candidate_facts, result.raw_text);
+
+        switchTab('emergency');
+      } catch (err) {
+        btn.innerHTML = '<span>⚡ Run End-to-End Pipeline</span>';
+        btn.disabled = false;
+        alert('Pipeline execution failed: ' + err);
+      }
+    }
+
+    // Auto-load initial data on startup
+    window.addEventListener('DOMContentLoaded', loadInitialData);
+  </script>
+</body>
+</html>

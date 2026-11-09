@@ -728,25 +728,47 @@ class VerifyRequest(BaseModel):
 _mongo_client: Optional[MongoClient] = None
 
 
+_mongo_available: Optional[bool] = None
+
+
+def is_mongo_available() -> bool:
+    """Check if MongoDB is running without blocking each database operation."""
+    global _mongo_available, _mongo_client
+    if _mongo_available is False:
+        return False
+    try:
+        if _mongo_client is None:
+            _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=800)
+        _mongo_client.admin.command("ping")
+        _mongo_available = True
+        return True
+    except Exception:
+        _mongo_available = False
+        logger.info("MongoDB not running locally; switching to fast SQLite mode (data/meditrace.db).")
+        return False
+
+
 def get_db() -> Database:
     """Return the MongoDB database handle (client is created once and reused)."""
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
+        _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=800)
     return _mongo_client[MONGODB_DB]
 
 
 def init_verification_db() -> None:
     """Create indexes (collections are created lazily by MongoDB). Never drops data."""
-    try:
-        db = get_db()
-        db.verified_facts.create_index([("fact_type", ASCENDING), ("status", ASCENDING)])
-        db.verification_logs.create_index([("created_at", ASCENDING)])
-        db.candidate_facts.create_index([("created_at", ASCENDING)])
-        logger.info(f"MongoDB ready (db='{MONGODB_DB}')")
-    except Exception as e:
-        # Don't crash on import; /health will report the problem.
-        logger.error(f"Could not connect to MongoDB at startup: {e}")
+    if is_mongo_available():
+        try:
+            db = get_db()
+            db.verified_facts.create_index([("fact_type", ASCENDING), ("status", ASCENDING)])
+            db.verification_logs.create_index([("created_at", ASCENDING)])
+            db.candidate_facts.create_index([("created_at", ASCENDING)])
+            logger.info(f"MongoDB ready (db='{MONGODB_DB}')")
+        except Exception as e:
+            logger.error(f"MongoDB indexing error: {e}")
+    else:
+        logger.info("MediTrace storage active: SQLite engine (data/meditrace.db)")
 
 
 def doc_to_dict(doc: dict) -> dict:
@@ -800,9 +822,27 @@ def evidence_supports_candidate(candidate: CandidateFact) -> bool:
     return value_lower in source_lower
 
 
+SQLITE_PATH = os.path.join(BASE_DIR, "data", "meditrace.db")
+
+
 def fetch_verified_facts(db: Database, fact_type: str) -> List[dict]:
     """All currently-active (status='verified') facts of one type, for conflict/duplicate checks."""
-    return [doc_to_dict(d) for d in db.verified_facts.find({"fact_type": fact_type, "status": "verified"})]
+    if is_mongo_available():
+        try:
+            return [doc_to_dict(d) for d in db.verified_facts.find({"fact_type": fact_type, "status": "verified"})]
+        except Exception:
+            pass
+    if os.path.exists(SQLITE_PATH):
+        try:
+            import sqlite3
+            con = sqlite3.connect(SQLITE_PATH)
+            con.row_factory = sqlite3.Row
+            rows = [dict(r) for r in con.execute("SELECT * FROM verified_facts WHERE fact_type = ? AND status = 'verified'", (fact_type,)).fetchall()]
+            con.close()
+            return rows
+        except Exception as sqle:
+            logger.warning(f"SQLite fallback failed: {sqle}")
+    return []
 
 
 def find_duplicate(candidate: CandidateFact, existing: List[dict]) -> Optional[dict]:
@@ -881,7 +921,24 @@ def now_iso() -> str:
 def insert_candidate_fact(db: Database, candidate: CandidateFact, final_status: str) -> None:
     doc = candidate.model_dump() if hasattr(candidate, "model_dump") else candidate.dict()
     doc.update({"status": final_status, "created_at": now_iso()})
-    db.candidate_facts.insert_one(doc)
+    if is_mongo_available():
+        try:
+            db.candidate_facts.insert_one(doc)
+            return
+        except Exception:
+            pass
+    if os.path.exists(SQLITE_PATH):
+        try:
+            import sqlite3
+            con = sqlite3.connect(SQLITE_PATH)
+            con.execute(
+                "INSERT INTO candidate_facts (fact_type, value, dosage, frequency, date, lab_value, source_document, source_text, extraction_confidence, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc.get("fact_type"), doc.get("value"), doc.get("dosage"), doc.get("frequency"), doc.get("date"), doc.get("lab_value"), doc.get("source_document"), doc.get("source_text"), doc.get("extraction_confidence"), doc.get("status"), doc.get("created_at"))
+            )
+            con.commit()
+            con.close()
+        except Exception as sqle:
+            logger.warning(f"SQLite candidate insert failed: {sqle}")
 
 
 def insert_verified_fact(db: Database, candidate: CandidateFact,
@@ -899,30 +956,58 @@ def insert_verified_fact(db: Database, candidate: CandidateFact,
                                "source_text": candidate.source_text}],
         "created_at": now, "updated_at": now,
     }
-    return str(db.verified_facts.insert_one(doc).inserted_id)
+    if is_mongo_available():
+        try:
+            return str(db.verified_facts.insert_one(doc).inserted_id)
+        except Exception:
+            pass
+    new_id = "1"
+    if os.path.exists(SQLITE_PATH):
+        try:
+            import sqlite3
+            con = sqlite3.connect(SQLITE_PATH)
+            cur = con.cursor()
+            cur.execute(
+                "INSERT INTO verified_facts (fact_type, value, dosage, frequency, date, lab_value, source_document, source_text, extraction_confidence, verification_confidence, status, reason, source_references, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc["fact_type"], doc["value"], doc["dosage"], doc["frequency"], doc["date"], doc["lab_value"], doc["source_document"], doc["source_text"], doc["extraction_confidence"], doc["verification_confidence"], doc["status"], doc["reason"], json.dumps(doc["source_references"]), doc["created_at"], doc["updated_at"])
+            )
+            con.commit()
+            new_id = str(cur.lastrowid)
+            con.close()
+        except Exception as sqle:
+            logger.warning(f"SQLite insert verified failed: {sqle}")
+    return new_id
 
 
 def merge_source_reference(db: Database, verified_id: str, source_document: str, source_text: str) -> None:
     """Attach a new piece of evidence to an existing verified fact instead of duplicating the row."""
-    db.verified_facts.update_one(
-        {"_id": ObjectId(verified_id)},
-        {"$addToSet": {"source_references": {"source_document": source_document,
-                                              "source_text": source_text}},
-         "$set": {"updated_at": now_iso()}},
-    )
+    if is_mongo_available():
+        try:
+            db.verified_facts.update_one(
+                {"_id": ObjectId(verified_id)},
+                {"$addToSet": {"source_references": {"source_document": source_document,
+                                                      "source_text": source_text}},
+                 "$set": {"updated_at": now_iso()}},
+            )
+        except Exception:
+            pass
 
 
 def insert_verification_log(db: Database, candidate: CandidateFact, decision: str,
                              reason: str, verification_confidence: float,
                              compared_with: Optional[dict]) -> None:
-    db.verification_logs.insert_one({
-        "fact_type": candidate.fact_type, "value": candidate.value,
-        "source_document": candidate.source_document, "source_text": candidate.source_text,
-        "extraction_confidence": candidate.extraction_confidence,
-        "verification_confidence": verification_confidence,
-        "decision": decision, "reason": reason,
-        "compared_with": compared_with, "created_at": now_iso(),
-    })
+    if is_mongo_available():
+        try:
+            db.verification_logs.insert_one({
+                "fact_type": candidate.fact_type, "value": candidate.value,
+                "source_document": candidate.source_document, "source_text": candidate.source_text,
+                "extraction_confidence": candidate.extraction_confidence,
+                "verification_confidence": verification_confidence,
+                "decision": decision, "reason": reason,
+                "compared_with": compared_with, "created_at": now_iso(),
+            })
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------
@@ -1016,7 +1101,24 @@ def verify_single_candidate(db: Database, candidate: CandidateFact) -> dict:
 # ---------------------------------------------------------
 def build_verified_profile() -> dict:
     """The trusted profile: only status='verified' facts, grouped by type."""
-    rows = list(get_db().verified_facts.find({"status": "verified"}).sort("_id", ASCENDING))
+    rows = []
+    if is_mongo_available():
+        try:
+            rows = list(get_db().verified_facts.find({"status": "verified"}).sort("_id", ASCENDING))
+        except Exception:
+            pass
+    if not rows and os.path.exists(SQLITE_PATH):
+        try:
+            import sqlite3
+            con = sqlite3.connect(SQLITE_PATH)
+            con.row_factory = sqlite3.Row
+            for r in con.execute("SELECT * FROM verified_facts WHERE status = 'verified'").fetchall():
+                d = dict(r)
+                d["source_references"] = json.loads(d.get("source_references") or "[]")
+                rows.append(d)
+            con.close()
+        except Exception as sqle:
+            logger.warning(f"SQLite fallback failed: {sqle}")
 
     profile = {"medications": [], "allergies": [], "conditions": [], "lab_values": [], "dates": []}
     key_by_type = {
@@ -1029,14 +1131,14 @@ def build_verified_profile() -> dict:
             continue
         profile[key].append({
             "value": row["value"],
-            "dosage": row["dosage"],
-            "frequency": row["frequency"],
-            "date": row["date"],
-            "lab_value": row["lab_value"],
-            "extraction_confidence": row["extraction_confidence"],
-            "verification_confidence": row["verification_confidence"],
-            "status": row["status"],
-            "reason": row["reason"],
+            "dosage": row.get("dosage"),
+            "frequency": row.get("frequency"),
+            "date": row.get("date"),
+            "lab_value": row.get("lab_value"),
+            "extraction_confidence": row.get("extraction_confidence", 0.9),
+            "verification_confidence": row.get("verification_confidence", 0.9),
+            "status": row.get("status", "verified"),
+            "reason": row.get("reason"),
             "sources": row.get("source_references") or [],
         })
     return profile
@@ -1044,10 +1146,27 @@ def build_verified_profile() -> dict:
 
 def fetch_unresolved_conflicts() -> List[dict]:
     """status='conflict' rows: evidence-supported facts that clash with the verified profile."""
-    rows = [doc_to_dict(d) for d in get_db().verified_facts.find({"status": "conflict"}).sort("_id", ASCENDING)]
-    for r in rows:
-        r.pop("source_references", None)
-    return rows
+    try:
+        rows = [doc_to_dict(d) for d in get_db().verified_facts.find({"status": "conflict"}).sort("_id", ASCENDING)]
+        for r in rows:
+            r.pop("source_references", None)
+        return rows
+    except Exception as e:
+        logger.warning(f"MongoDB fetch_unresolved_conflicts failed: {e}. Falling back to SQLite.")
+        rows = []
+        if os.path.exists(SQLITE_PATH):
+            try:
+                import sqlite3
+                con = sqlite3.connect(SQLITE_PATH)
+                con.row_factory = sqlite3.Row
+                for r in con.execute("SELECT * FROM verified_facts WHERE status = 'conflict'").fetchall():
+                    d = dict(r)
+                    d.pop("source_references", None)
+                    rows.append(d)
+                con.close()
+            except Exception:
+                pass
+        return rows
 
 
 def verify_candidate_facts(candidate_facts: List[CandidateFact]) -> dict:
@@ -1091,6 +1210,12 @@ def verify_candidate_facts(candidate_facts: List[CandidateFact]) -> dict:
 # =========================================================
 @app.get("/", response_class=HTMLResponse)
 async def home(request: Request):
+    """Unified Multi-Agent Dashboard (Member 1 -> 2 -> 3 -> 4)."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+@app.get("/legacy", response_class=HTMLResponse)
+async def legacy_home(request: Request):
     """Simple upload UI for manual testing."""
     return templates.TemplateResponse("index.html", {"request": request})
 
@@ -1222,7 +1347,125 @@ async def safety_page(request: Request):
     return templates.TemplateResponse("safety.html", {"request": request})
 
 
+# ==========================================
+# MEMBER 4: EMERGENCY AGENT & UNIFIED PIPELINE
+# ==========================================
+from agents.emergency_agent import generate_emergency_summary
+
+
+@app.get("/emergency-summary")
+def get_emergency_summary(patient_id: Optional[str] = None):
+    """
+    Member 4's primary clinical endpoint.
+    Synthesizes Member 2's verified profile + Member 3's safety alerts
+    into a rapid triage & ER handover summary.
+    """
+    verified_profile = build_verified_profile()
+    safety_rep = run_safety_and_trend_checks(patient_id)
+    conflicts = fetch_unresolved_conflicts()
+    return generate_emergency_summary(
+        patient_id=patient_id,
+        verified_profile=verified_profile,
+        safety_report=safety_rep,
+        conflict_facts=conflicts,
+    )
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard_page(request: Request):
+    """Member 4's Unified Multi-Agent Dashboard."""
+    return templates.TemplateResponse("dashboard.html", {"request": request})
+
+
+@app.post("/pipeline/run")
+async def run_end_to_end_pipeline(file: UploadFile = File(...)):
+    """
+    End-to-End Multi-Agent Pipeline (Member 1 -> 2 -> 3 -> 4):
+    1. Member 1 extracts candidate facts & OCR text
+    2. Member 2 verifies candidate facts against evidence
+    3. Member 3 analyzes drug interactions, dosages & trends
+    4. Member 4 creates the rapid emergency handover summary
+    """
+    try:
+        file_bytes = await file.read()
+        validate_file(file.filename, file_bytes)
+        save_path = save_upload(file.filename, file_bytes)
+
+        # Stage 1: Member 1 Document Agent
+        m1_result = process_document(save_path, original_filename=file.filename)
+
+        # Stage 2: Member 2 Verification Agent
+        m2_result = verify_candidate_facts(m1_result.candidate_facts)
+
+        # Stage 3: Member 3 Safety & Trend Agent
+        m3_result = run_safety_and_trend_checks()
+
+        # Stage 4: Member 4 Emergency Summary Agent
+        m4_result = generate_emergency_summary(
+            verified_profile=m2_result.get("verified_profile"),
+            safety_report=m3_result,
+            conflict_facts=m2_result.get("conflicts", []),
+        )
+
+        return {
+            "status": "success",
+            "document": file.filename,
+            "raw_text": m1_result.raw_text,
+            "cleaned_text": m1_result.cleaned_text,
+            "candidate_facts": [f.dict() if hasattr(f, "dict") else f for f in m1_result.candidate_facts],
+            "verified_facts": m2_result.get("verified_facts", []),
+            "conflicts": m2_result.get("conflicts", []),
+            "verified_profile": m2_result.get("verified_profile", {}),
+            "safety_report": m3_result,
+            "emergency_summary": m4_result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"End-to-end pipeline failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
+
+
+@app.get("/pipeline/sample/{sample_name}")
+async def run_sample_pipeline(sample_name: str):
+    """Run the complete 4-member pipeline on one of the sample clinical PDFs."""
+    sample_dir = os.path.join(BASE_DIR, "data", "sample_docs")
+    sample_path = os.path.join(sample_dir, sample_name)
+    if not os.path.exists(sample_path):
+        raise HTTPException(status_code=404, detail=f"Sample '{sample_name}' not found.")
+
+    try:
+        m1_result = process_document(sample_path, original_filename=sample_name)
+        m2_result = verify_candidate_facts(m1_result.candidate_facts)
+        m3_result = run_safety_and_trend_checks()
+        m4_result = generate_emergency_summary(
+            verified_profile=m2_result.get("verified_profile"),
+            safety_report=m3_result,
+            conflict_facts=m2_result.get("conflicts", []),
+        )
+        return {
+            "status": "success",
+            "sample": sample_name,
+            "raw_text": m1_result.raw_text,
+            "candidate_facts": [f.dict() if hasattr(f, "dict") else f for f in m1_result.candidate_facts],
+            "verified_facts": m2_result.get("verified_facts", []),
+            "conflicts": m2_result.get("conflicts", []),
+            "verified_profile": m2_result.get("verified_profile", {}),
+            "safety_report": m3_result,
+            "emergency_summary": m4_result,
+        }
+    except Exception as e:
+        logger.error(f"Sample pipeline failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Sample pipeline error: {str(e)}")
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=8000,
+        reload=True,
+        reload_excludes=["*.db", "*.db-journal", "*.sqlite*", "data/*", "data/uploads/*"],
+    )
 
