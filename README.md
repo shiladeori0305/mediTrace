@@ -9,181 +9,146 @@
 MediTrace addresses a key problem in document-driven healthcare workflows: **extracted information should not be treated as verified information by default**.
 
 The system processes prescriptions, scanned reports, discharge summaries, and other medical documents using OCR and NLP, converts extracted information into candidate facts, verifies those facts against source evidence, and builds a **verified patient profile** for downstream agents.
+
 ### Core Workflow
 
 ```text
 Medical Documents
        ↓
-Document Agent
+Member 1: Document Agent
 (OCR + Medical NER)
        ↓
-Candidate Facts
+Candidate Facts (Unverified)
        ↓
-Verification Agent
+Member 2: Verification Agent
+(Evidence Grounding & Conflict Resolution)
        ↓
-Verified Patient Profile
+Verified Patient Profile (Trusted Layer)
        ↓
-┌──────────┬──────────┬────────────┐
-│  Safety  │  Trend   │  Emergency │
-│  Agent   │  Agent   │   Agent    │
-└──────────┴──────────┴────────────┘
-       ↓
-Dashboard
+┌───────────────────────┬────────────────────────────┐
+│ Member 3: Safety &    │ Member 4: Emergency        │
+│ Trend Agents          │ Summary Agent              │
+│ (Interactions/Trends) │ (ER Triage & Handover)     │
+└───────────────────────┴────────────────────────────┘
+       ↓                                    ↓
+┌────────────────────────────────────────────────────┐
+│ Member 4: Unified Clinical Dashboard (/dashboard)  │
+└────────────────────────────────────────────────────┘
 ```
 
-## Key Features
+## System Architecture & Multi-Agent Modules
 
-- **Document Processing:** Extracts medicines, dosages, dates, conditions, and allergies from medical documents.
-- **Fact Verification:** Validates extracted facts against source documents and existing patient information.
-- **Verified Patient Profile:** Acts as the trusted information layer for downstream agents.
-- **Medication Safety:** Identifies potential interactions, duplicate medications, dosage issues, and allergy conflicts.
-- **Trend Detection:** Analyzes verified medical history for relevant changes over time.
-- **Emergency Summary:** Generates a concise summary from the latest verified patient information.
-- **Traceability:** Maintains source evidence and verification status for extracted facts.
+| Agent | Responsibility | Implementation Details |
+|---|---|---|
+| **Member 1: Document Agent** | Ingestion, OCR & Extraction | Preprocesses document images with OpenCV, executes Tesseract OCR, detects text vs scanned PDFs via PyMuPDF, and extracts medical entities with spaCy and clinical regex patterns. Every entity is tagged `status="candidate"`. |
+| **Member 2: Verification Agent** | Fact Verification & Profile | Evaluates candidate facts using deterministic evidence grounding. Merges duplicate records with source references and flags contradictions (e.g. differing dosages, conflicting allergy statements) without overwriting historical verified records. |
+| **Member 3: Safety & Trend Agent** | Clinical Safety & Analytics | Consumes **only** verified patient profile data. Identifies drug-drug interactions, allergy contraindications, duplicate drug classes, maximum daily dosage limits, and longitudinal laboratory deterioration trends. |
+| **Member 4: Emergency Agent & Dashboard** | Triage, Handover & Orchestrator | Synthesizes verified clinical records and safety alerts into an emergency triage categorization (RED/YELLOW/GREEN), generates an automated 15-second clinical handover briefing, and powers the unified dashboard (`/dashboard`) connecting all 4 modules end-to-end. |
 
 ## Technology Stack
 
 | Component | Technology |
 |---|---|
-| Language | Python 3 |
-| OCR | Tesseract OCR |
-| NLP | spaCy / Medical NER |
-| Agent Framework | LangGraph / CrewAI |
-| LLM | LLM APIs |
-| Backend | FastAPI |
-| Database | MongoDB / PostgreSQL |
-| Frontend | React.js / Streamlit |
-| Reference Data | DrugBank API / OpenFDA |
+| Language | Python 3.11+ |
+| Backend | FastAPI, Uvicorn |
+| OCR & Document Ingestion | Tesseract OCR, OpenCV, PyMuPDF (fitz) |
+| Clinical NLP & NER | spaCy (`en_core_web_sm`), Regex Medical Rule Extractors |
+| Database & Storage | MongoDB / SQLite fallback (`meditrace.db`) |
+| Frontend | Jinja2 Templates, HTML5/CSS3 Dashboard, Responsive ER Cards |
 
 ## Project Structure
 
 ```text
 MediTrace/
-├── main.py
-├── requirements.txt
+├── main.py                       # Core FastAPI application & pipeline orchestrator
+├── requirements.txt              # Project dependencies
 ├── agents/
-│   ├── document_agent/
-│   ├── verification_agent/
-│   ├── safety_agent/
-│   ├── trend_agent/
-│   └── emergency_agent/
+│   ├── __init__.py
+│   ├── safety_engine.py          # Member 3: Clinical safety rules & interaction matrix
+│   ├── safety_trend_agent.py     # Member 3: Safety & trend analysis agent
+│   └── emergency_agent.py        # Member 4: Emergency summary, triage & handover agent
+├── templates/
+│   ├── dashboard.html            # Member 4: Unified 4-agent interactive dashboard
+│   ├── index.html                # Member 1: Document processing upload test page
+│   └── safety.html               # Member 3: Safety and trend report view
 ├── data/
-├── models/
-├── services/
-└── utils/
+│   ├── meditrace.db              # SQLite storage database
+│   ├── sample_docs/              # Clinical test PDFs and sample reports
+│   └── uploads/                  # Temporary document processing storage
+├── migrate_sqlite_to_mongo.py    # Optional SQLite to MongoDB migration utility
+└── seed_test_data.py             # Test data generation script
 ```
 
-*The final folder structure may evolve during development.*
-# Setup
+## Setup & Running
 
-## Prerequisites
+### 1. Prerequisites
 
-- Python 3
+- Python 3.10+
 - Git
-- Tesseract OCR
-- pip
+- Tesseract OCR (Windows: install 64-bit installer and ensure path is set)
 
-### 1. Install Tesseract
-
-**Windows:** Download the 64-bit installer from the Tesseract project wiki and add Tesseract to the system PATH.
-
-**macOS:**
-```bash
-brew install tesseract
-```
-
-### 2. Clone Repository
+### 2. Virtual Environment & Dependencies
 
 ```bash
-git clone <YOUR_REPOSITORY_URL>
-cd MediTrace
-```
+# Clone the repository
+git clone https://github.com/shiladeori0305/mediTrace.git
+cd mediTrace
 
-### 3. Create Virtual Environment
-
-**Windows**
-```bash
+# Create and activate virtual environment
 python -m venv venv
-venv\Scripts\activate
-```
+venv\Scripts\activate       # On Windows
+# source venv/bin/activate  # On macOS/Linux
 
-**macOS**
-```bash
-python3 -m venv venv
-source venv/bin/activate
-```
-
-### 4. Install Dependencies
-
-**Windows**
-```bash
+# Install dependencies and download NLP model
 pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 ```
 
-**macOS**
-```bash
-pip install -r requirements.txt
-python3 -m spacy download en_core_web_sm
-```
+### 3. Run Application
 
-### 5. Run
-
-**Windows**
 ```bash
 python main.py
 ```
 
-**macOS**
-```bash
-python3 main.py
-```
-
-### Windows Tesseract PATH Fix
-
-If Tesseract is not detected:
-
-```python
-import pytesseract
-
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
-```
+Then open your browser:
+- **Unified Multi-Agent Dashboard:** [http://localhost:8000](http://localhost:8000) or [http://localhost:8000/dashboard](http://localhost:8000/dashboard)
+- **Interactive API Documentation:** [http://localhost:8000/docs](http://localhost:8000/docs)
+- **Safety & Trends Report:** [http://localhost:8000/safety](http://localhost:8000/safety)
 
 ## Configuration
 
-If external APIs or databases are required, store credentials in environment variables or a `.env` file.
+Settings can be stored in a `.env` file in the root directory:
 
 ```env
-LLM_API_KEY=your_api_key
-DATABASE_URL=your_database_url
-OPENFDA_API_KEY=your_api_key
+TESSERACT_CMD=C:\Program Files\Tesseract-OCR\tesseract.exe
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DB=meditrace
 ```
 
-**Do not commit API keys, credentials, or private patient information to GitHub.**
+*Note: If MongoDB is not active locally, the system automatically runs with the embedded SQLite engine (`data/meditrace.db`) without requiring extra configuration.*
 
-## Evaluation
+## Evaluation & Testing
 
-The project is designed to compare:
-
-```text
-Pipeline without verification
-              vs.
-Pipeline with verification
-```
-
-Evaluation uses sample clinical documents, ground-truth information, and deliberately introduced error cases to study whether the verification stage reduces downstream errors.
+The system supports automated and interactive evaluation:
+- Run pre-loaded clinical cases directly from the dashboard:
+  - `report_2024_01.pdf` (Baseline Diabetes & Metformin)
+  - `report_2024_07.pdf` (Worsening HbA1c & Blood Glucose)
+  - `prescription_2025_01.pdf` (Warfarin + Aspirin interaction, Penicillin allergy conflict)
+  - `comprehensive_test_prescription.pdf` (Full 4-agent multi-condition validation)
+- Compare verification effectiveness:
+  ```text
+  Pipeline without verification vs. Pipeline with verification
+  ```
 
 ## Project Status
 
-**Status: In Development**
+**Status: Multi-Agent Prototype Implemented**
 
-MediTrace is an academic/research prototype. The planned implementation progresses through document ingestion, verification, Safety and Trend agents, Emergency Agent integration, and evaluation/refinement.
+All 4 planned agents (Document Processing, Verification, Safety & Trend, and Emergency Summary) are implemented and connected through the unified dashboard. Future scope includes fine-tuned clinical LLM integration for complex medical reasoning, EHR/FHIR interoperability, and large-scale hospital dataset benchmarking.
 
 ## Important Note
 
-MediTrace is intended for **academic and controlled research use**. It is not a substitute for professional medical judgment or a production clinical decision-support system. Use synthetic or appropriately de-identified data for development and testing.
+MediTrace is intended for **academic and controlled research use**. It is not a substitute for professional medical judgment or a certified clinical decision-support system. Use synthetic or appropriately de-identified data for development and testing.
 
 ## Team
 
@@ -192,11 +157,3 @@ MediTrace is intended for **academic and controlled research use**. It is not a 
 - Shila Deori
 - Shraddha Chaurasia
 - Palak Mahajan
-
-## Project Focus
-
-The central idea of MediTrace is:
-
-> **Extract → Verify → Build a trusted profile → Analyze using verified information**
-
-This verification-first architecture is the primary focus of the project and its planned evaluation.
