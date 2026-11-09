@@ -728,47 +728,34 @@ class VerifyRequest(BaseModel):
 _mongo_client: Optional[MongoClient] = None
 
 
-_mongo_available: Optional[bool] = None
-
-
-def is_mongo_available() -> bool:
-    """Check if MongoDB is running without blocking each database operation."""
-    global _mongo_available, _mongo_client
-    if _mongo_available is False:
-        return False
-    try:
-        if _mongo_client is None:
-            _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=800)
-        _mongo_client.admin.command("ping")
-        _mongo_available = True
-        return True
-    except Exception:
-        _mongo_available = False
-        logger.info("MongoDB not running locally; switching to fast SQLite mode (data/meditrace.db).")
-        return False
+# ---------------------------------------------------------
+# DATABASE SETUP (MongoDB ONLY - three collections)
+# ---------------------------------------------------------
+# candidate_facts   : every candidate ever looked at, with its final decision
+# verified_facts    : trusted profile ("verified") + "conflict" rows for review
+# verification_logs : full audit trail, one document per decision
+_mongo_client: Optional[MongoClient] = None
 
 
 def get_db() -> Database:
     """Return the MongoDB database handle (client is created once and reused)."""
     global _mongo_client
     if _mongo_client is None:
-        _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=800)
+        _mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
     return _mongo_client[MONGODB_DB]
 
 
 def init_verification_db() -> None:
-    """Create indexes (collections are created lazily by MongoDB). Never drops data."""
-    if is_mongo_available():
-        try:
-            db = get_db()
-            db.verified_facts.create_index([("fact_type", ASCENDING), ("status", ASCENDING)])
-            db.verification_logs.create_index([("created_at", ASCENDING)])
-            db.candidate_facts.create_index([("created_at", ASCENDING)])
-            logger.info(f"MongoDB ready (db='{MONGODB_DB}')")
-        except Exception as e:
-            logger.error(f"MongoDB indexing error: {e}")
-    else:
-        logger.info("MediTrace storage active: SQLite engine (data/meditrace.db)")
+    """Create indexes in MongoDB collections."""
+    try:
+        db = get_db()
+        db.command("ping")
+        db.verified_facts.create_index([("fact_type", ASCENDING), ("status", ASCENDING)])
+        db.verification_logs.create_index([("created_at", ASCENDING)])
+        db.candidate_facts.create_index([("created_at", ASCENDING)])
+        logger.info(f"MongoDB successfully connected and initialized (db='{MONGODB_DB}')")
+    except Exception as e:
+        logger.error(f"MongoDB connection failed: {e}")
 
 
 def doc_to_dict(doc: dict) -> dict:
@@ -822,27 +809,9 @@ def evidence_supports_candidate(candidate: CandidateFact) -> bool:
     return value_lower in source_lower
 
 
-SQLITE_PATH = os.path.join(BASE_DIR, "data", "meditrace.db")
-
-
 def fetch_verified_facts(db: Database, fact_type: str) -> List[dict]:
     """All currently-active (status='verified') facts of one type, for conflict/duplicate checks."""
-    if is_mongo_available():
-        try:
-            return [doc_to_dict(d) for d in db.verified_facts.find({"fact_type": fact_type, "status": "verified"})]
-        except Exception:
-            pass
-    if os.path.exists(SQLITE_PATH):
-        try:
-            import sqlite3
-            con = sqlite3.connect(SQLITE_PATH)
-            con.row_factory = sqlite3.Row
-            rows = [dict(r) for r in con.execute("SELECT * FROM verified_facts WHERE fact_type = ? AND status = 'verified'", (fact_type,)).fetchall()]
-            con.close()
-            return rows
-        except Exception as sqle:
-            logger.warning(f"SQLite fallback failed: {sqle}")
-    return []
+    return [doc_to_dict(d) for d in db.verified_facts.find({"fact_type": fact_type, "status": "verified"})]
 
 
 def find_duplicate(candidate: CandidateFact, existing: List[dict]) -> Optional[dict]:
@@ -921,24 +890,7 @@ def now_iso() -> str:
 def insert_candidate_fact(db: Database, candidate: CandidateFact, final_status: str) -> None:
     doc = candidate.model_dump() if hasattr(candidate, "model_dump") else candidate.dict()
     doc.update({"status": final_status, "created_at": now_iso()})
-    if is_mongo_available():
-        try:
-            db.candidate_facts.insert_one(doc)
-            return
-        except Exception:
-            pass
-    if os.path.exists(SQLITE_PATH):
-        try:
-            import sqlite3
-            con = sqlite3.connect(SQLITE_PATH)
-            con.execute(
-                "INSERT INTO candidate_facts (fact_type, value, dosage, frequency, date, lab_value, source_document, source_text, extraction_confidence, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (doc.get("fact_type"), doc.get("value"), doc.get("dosage"), doc.get("frequency"), doc.get("date"), doc.get("lab_value"), doc.get("source_document"), doc.get("source_text"), doc.get("extraction_confidence"), doc.get("status"), doc.get("created_at"))
-            )
-            con.commit()
-            con.close()
-        except Exception as sqle:
-            logger.warning(f"SQLite candidate insert failed: {sqle}")
+    db.candidate_facts.insert_one(doc)
 
 
 def insert_verified_fact(db: Database, candidate: CandidateFact,
@@ -956,58 +908,30 @@ def insert_verified_fact(db: Database, candidate: CandidateFact,
                                "source_text": candidate.source_text}],
         "created_at": now, "updated_at": now,
     }
-    if is_mongo_available():
-        try:
-            return str(db.verified_facts.insert_one(doc).inserted_id)
-        except Exception:
-            pass
-    new_id = "1"
-    if os.path.exists(SQLITE_PATH):
-        try:
-            import sqlite3
-            con = sqlite3.connect(SQLITE_PATH)
-            cur = con.cursor()
-            cur.execute(
-                "INSERT INTO verified_facts (fact_type, value, dosage, frequency, date, lab_value, source_document, source_text, extraction_confidence, verification_confidence, status, reason, source_references, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (doc["fact_type"], doc["value"], doc["dosage"], doc["frequency"], doc["date"], doc["lab_value"], doc["source_document"], doc["source_text"], doc["extraction_confidence"], doc["verification_confidence"], doc["status"], doc["reason"], json.dumps(doc["source_references"]), doc["created_at"], doc["updated_at"])
-            )
-            con.commit()
-            new_id = str(cur.lastrowid)
-            con.close()
-        except Exception as sqle:
-            logger.warning(f"SQLite insert verified failed: {sqle}")
-    return new_id
+    return str(db.verified_facts.insert_one(doc).inserted_id)
 
 
 def merge_source_reference(db: Database, verified_id: str, source_document: str, source_text: str) -> None:
     """Attach a new piece of evidence to an existing verified fact instead of duplicating the row."""
-    if is_mongo_available():
-        try:
-            db.verified_facts.update_one(
-                {"_id": ObjectId(verified_id)},
-                {"$addToSet": {"source_references": {"source_document": source_document,
-                                                      "source_text": source_text}},
-                 "$set": {"updated_at": now_iso()}},
-            )
-        except Exception:
-            pass
+    db.verified_facts.update_one(
+        {"_id": ObjectId(verified_id)},
+        {"$addToSet": {"source_references": {"source_document": source_document,
+                                              "source_text": source_text}},
+         "$set": {"updated_at": now_iso()}},
+    )
 
 
 def insert_verification_log(db: Database, candidate: CandidateFact, decision: str,
                              reason: str, verification_confidence: float,
                              compared_with: Optional[dict]) -> None:
-    if is_mongo_available():
-        try:
-            db.verification_logs.insert_one({
-                "fact_type": candidate.fact_type, "value": candidate.value,
-                "source_document": candidate.source_document, "source_text": candidate.source_text,
-                "extraction_confidence": candidate.extraction_confidence,
-                "verification_confidence": verification_confidence,
-                "decision": decision, "reason": reason,
-                "compared_with": compared_with, "created_at": now_iso(),
-            })
-        except Exception:
-            pass
+    db.verification_logs.insert_one({
+        "fact_type": candidate.fact_type, "value": candidate.value,
+        "source_document": candidate.source_document, "source_text": candidate.source_text,
+        "extraction_confidence": candidate.extraction_confidence,
+        "verification_confidence": verification_confidence,
+        "decision": decision, "reason": reason,
+        "compared_with": compared_with, "created_at": now_iso(),
+    })
 
 
 # ---------------------------------------------------------
@@ -1101,24 +1025,7 @@ def verify_single_candidate(db: Database, candidate: CandidateFact) -> dict:
 # ---------------------------------------------------------
 def build_verified_profile() -> dict:
     """The trusted profile: only status='verified' facts, grouped by type."""
-    rows = []
-    if is_mongo_available():
-        try:
-            rows = list(get_db().verified_facts.find({"status": "verified"}).sort("_id", ASCENDING))
-        except Exception:
-            pass
-    if not rows and os.path.exists(SQLITE_PATH):
-        try:
-            import sqlite3
-            con = sqlite3.connect(SQLITE_PATH)
-            con.row_factory = sqlite3.Row
-            for r in con.execute("SELECT * FROM verified_facts WHERE status = 'verified'").fetchall():
-                d = dict(r)
-                d["source_references"] = json.loads(d.get("source_references") or "[]")
-                rows.append(d)
-            con.close()
-        except Exception as sqle:
-            logger.warning(f"SQLite fallback failed: {sqle}")
+    rows = list(get_db().verified_facts.find({"status": "verified"}).sort("_id", ASCENDING))
 
     profile = {"medications": [], "allergies": [], "conditions": [], "lab_values": [], "dates": []}
     key_by_type = {
@@ -1146,27 +1053,10 @@ def build_verified_profile() -> dict:
 
 def fetch_unresolved_conflicts() -> List[dict]:
     """status='conflict' rows: evidence-supported facts that clash with the verified profile."""
-    try:
-        rows = [doc_to_dict(d) for d in get_db().verified_facts.find({"status": "conflict"}).sort("_id", ASCENDING)]
-        for r in rows:
-            r.pop("source_references", None)
-        return rows
-    except Exception as e:
-        logger.warning(f"MongoDB fetch_unresolved_conflicts failed: {e}. Falling back to SQLite.")
-        rows = []
-        if os.path.exists(SQLITE_PATH):
-            try:
-                import sqlite3
-                con = sqlite3.connect(SQLITE_PATH)
-                con.row_factory = sqlite3.Row
-                for r in con.execute("SELECT * FROM verified_facts WHERE status = 'conflict'").fetchall():
-                    d = dict(r)
-                    d.pop("source_references", None)
-                    rows.append(d)
-                con.close()
-            except Exception:
-                pass
-        return rows
+    rows = [doc_to_dict(d) for d in get_db().verified_facts.find({"status": "conflict"}).sort("_id", ASCENDING)]
+    for r in rows:
+        r.pop("source_references", None)
+    return rows
 
 
 def verify_candidate_facts(candidate_facts: List[CandidateFact]) -> dict:

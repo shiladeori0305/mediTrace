@@ -165,35 +165,21 @@ def expand_medication(name: str) -> List[str]:
 # ----------------------------------------------------------------------------
 
 def _load_facts(patient_id):
-    """Returns (facts, warnings). Never raises."""
+    """Returns (facts, warnings). Consumes exclusively from MongoDB."""
     warnings = []
-    if is_mongo_available():
-        try:
-            col = get_db()["verified_facts"]
-            query = {"status": {"$in": ["verified", "conflict"]}}
-            if patient_id:
-                if col.count_documents({"patient_id": patient_id}, limit=1):
-                    query["patient_id"] = patient_id
-                else:
-                    warnings.append("verified_facts has no patient_id field; all facts were "
-                                    "treated as belonging to a single patient.")
-            return list(col.find(query)), warnings
-        except Exception as e:
-            log.warning(f"MongoDB read error: {e}")
-
     try:
-        import sqlite3
-        sqlite_path = os.path.join(BASE, "data", "meditrace.db")
-        if os.path.exists(sqlite_path):
-            con = sqlite3.connect(sqlite_path)
-            con.row_factory = sqlite3.Row
-            cur = con.cursor()
-            rows = [dict(r) for r in cur.execute("SELECT * FROM verified_facts WHERE status IN ('verified', 'conflict')").fetchall()]
-            con.close()
-            return rows, warnings
-    except Exception as sqle:
-        log.warning(f"SQLite fallback read failed: {sqle}")
-    return [], ["Database records could not be retrieved; safety check incomplete."]
+        col = get_db()["verified_facts"]
+        query = {"status": {"$in": ["verified", "conflict"]}}
+        if patient_id:
+            if col.count_documents({"patient_id": patient_id}, limit=1):
+                query["patient_id"] = patient_id
+            else:
+                warnings.append("verified_facts has no patient_id field; all facts were "
+                                "treated as belonging to a single patient.")
+        return list(col.find(query)), warnings
+    except Exception as e:
+        log.error(f"MongoDB read error: {e}")
+        return [], [f"MongoDB error: {e}"]
 
 
 def _document_dates(facts) -> dict:

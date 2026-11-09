@@ -100,45 +100,37 @@ def _evaluate_lab_value(name: str, raw_value: Any) -> Dict[str, Any]:
     }
 
 
-def _load_profile_from_sqlite() -> Dict[str, Any]:
-    """Fallback loader when MongoDB is not running."""
+def _load_profile_from_mongo() -> Dict[str, Any]:
+    """Load verified profile directly from MongoDB."""
     profile = {"medications": [], "allergies": [], "conditions": [], "lab_values": [], "dates": []}
-    if not os.path.exists(DB_PATH):
-        return profile
-
     try:
-        con = sqlite3.connect(DB_PATH)
-        con.row_factory = sqlite3.Row
-        cur = con.cursor()
-        rows = cur.execute("SELECT * FROM verified_facts WHERE status = 'verified'").fetchall()
-        for r in rows:
-            d = dict(r)
-            ft = d.get("fact_type")
-            item = {
-                "value": d.get("value"),
-                "dosage": d.get("dosage"),
-                "frequency": d.get("frequency"),
-                "date": d.get("date"),
-                "lab_value": d.get("lab_value"),
-                "extraction_confidence": d.get("extraction_confidence", 1.0),
-                "verification_confidence": d.get("verification_confidence", 1.0),
-                "status": d.get("status"),
-                "reason": d.get("reason"),
-                "source_document": d.get("source_document")
-            }
-            if ft == "medication":
-                profile["medications"].append(item)
-            elif ft == "allergy":
-                profile["allergies"].append(item)
-            elif ft == "condition":
-                profile["conditions"].append(item)
-            elif ft == "lab_value":
-                profile["lab_values"].append(item)
-            elif ft == "date":
-                profile["dates"].append(item)
-        con.close()
+        from pymongo import MongoClient, ASCENDING
+        uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+        db_name = os.getenv("MONGODB_DB", "meditrace")
+        client = MongoClient(uri, serverSelectionTimeoutMS=5000)
+        rows = list(client[db_name].verified_facts.find({"status": "verified"}).sort("_id", ASCENDING))
+        key_by_type = {
+            "medication": "medications", "allergy": "allergies", "condition": "conditions",
+            "lab_value": "lab_values", "date": "dates",
+        }
+        for row in rows:
+            key = key_by_type.get(row.get("fact_type"))
+            if not key:
+                continue
+            profile[key].append({
+                "value": row.get("value"),
+                "dosage": row.get("dosage"),
+                "frequency": row.get("frequency"),
+                "date": row.get("date"),
+                "lab_value": row.get("lab_value"),
+                "extraction_confidence": row.get("extraction_confidence", 1.0),
+                "verification_confidence": row.get("verification_confidence", 1.0),
+                "status": row.get("status"),
+                "reason": row.get("reason"),
+                "source_document": row.get("source_document")
+            })
     except Exception as e:
-        log.warning(f"Could not load fallback SQLite profile: {e}")
+        log.error(f"Failed to load profile from MongoDB: {e}")
     return profile
 
 
@@ -153,7 +145,7 @@ def generate_emergency_summary(
     Generates a rapid ER triage view based on verified clinical facts.
     """
     if verified_profile is None or not any(verified_profile.values()):
-        verified_profile = _load_profile_from_sqlite()
+        verified_profile = _load_profile_from_mongo()
 
     if safety_report is None:
         # Load sample report if available as fallback
