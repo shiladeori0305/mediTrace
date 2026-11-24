@@ -1024,7 +1024,7 @@ def verify_single_candidate(db: Database, candidate: CandidateFact) -> dict:
 # VERIFIED PATIENT PROFILE
 # ---------------------------------------------------------
 def build_verified_profile() -> dict:
-    """The trusted profile: only status='verified' facts, grouped by type."""
+    """The trusted profile: only status='verified' facts, grouped by type (deduplicated)."""
     rows = list(get_db().verified_facts.find({"status": "verified"}).sort("_id", ASCENDING))
 
     profile = {"medications": [], "allergies": [], "conditions": [], "lab_values": [], "dates": []}
@@ -1032,10 +1032,22 @@ def build_verified_profile() -> dict:
         "medication": "medications", "allergy": "allergies", "condition": "conditions",
         "lab_value": "lab_values", "date": "dates",
     }
+    seen = set()
     for row in rows:
         key = key_by_type.get(row["fact_type"])
         if not key:
             continue
+        dedup_key = (
+            key,
+            str(row["value"]).strip().lower(),
+            str(row.get("dosage") or "").strip().lower(),
+            str(row.get("frequency") or "").strip().lower(),
+            str(row.get("date") or "").strip().lower(),
+            str(row.get("lab_value") or "").strip().lower(),
+        )
+        if dedup_key in seen:
+            continue
+        seen.add(dedup_key)
         profile[key].append({
             "value": row["value"],
             "dosage": row.get("dosage"),
@@ -1052,11 +1064,22 @@ def build_verified_profile() -> dict:
 
 
 def fetch_unresolved_conflicts() -> List[dict]:
-    """status='conflict' rows: evidence-supported facts that clash with the verified profile."""
+    """status='conflict' rows: evidence-supported facts that clash with the verified profile (deduplicated)."""
     rows = [doc_to_dict(d) for d in get_db().verified_facts.find({"status": "conflict"}).sort("_id", ASCENDING)]
+    seen = set()
+    deduped = []
     for r in rows:
-        r.pop("source_references", None)
-    return rows
+        k = (
+            r.get("fact_type"),
+            str(r.get("value")).strip().lower(),
+            str(r.get("dosage") or "").strip().lower(),
+            str(r.get("reason") or "").strip().lower(),
+        )
+        if k not in seen:
+            seen.add(k)
+            r.pop("source_references", None)
+            deduped.append(r)
+    return deduped
 
 
 def verify_candidate_facts(candidate_facts: List[CandidateFact]) -> dict:

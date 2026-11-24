@@ -113,10 +113,22 @@ def _load_profile_from_mongo() -> Dict[str, Any]:
             "medication": "medications", "allergy": "allergies", "condition": "conditions",
             "lab_value": "lab_values", "date": "dates",
         }
+        seen = set()
         for row in rows:
             key = key_by_type.get(row.get("fact_type"))
             if not key:
                 continue
+            dedup_key = (
+                key,
+                str(row.get("value") or "").strip().lower(),
+                str(row.get("dosage") or "").strip().lower(),
+                str(row.get("frequency") or "").strip().lower(),
+                str(row.get("date") or "").strip().lower(),
+                str(row.get("lab_value") or "").strip().lower(),
+            )
+            if dedup_key in seen:
+                continue
+            seen.add(dedup_key)
             profile[key].append({
                 "value": row.get("value"),
                 "dosage": row.get("dosage"),
@@ -245,8 +257,28 @@ def generate_emergency_summary(
     conditions = []
     for cond in verified_profile.get("conditions", []):
         c_name = cond.get("value") if isinstance(cond, dict) else str(cond)
-        if c_name:
+        if c_name and c_name not in conditions:
             conditions.append(c_name)
+
+    # Deduplicate cautions, active meds, and allergies
+    seen_cautions = set()
+    unique_cautions = []
+    for c in cautions:
+        if c not in seen_cautions:
+            seen_cautions.add(c)
+            unique_cautions.append(c)
+    cautions = unique_cautions
+
+    seen_meds = set()
+    unique_meds = []
+    for m in active_meds:
+        k = (m["name"].lower(), (m.get("dosage") or "").lower())
+        if k not in seen_meds:
+            seen_meds.add(k)
+            unique_meds.append(m)
+    active_meds = unique_meds
+
+    verified_allergies = list(dict.fromkeys(verified_allergies))
 
     # Determine Triage Level
     if triage_score >= 3 or any(a.get("severity", "").lower() == "critical" for a in safety_alerts):

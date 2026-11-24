@@ -165,7 +165,7 @@ def expand_medication(name: str) -> List[str]:
 # ----------------------------------------------------------------------------
 
 def _load_facts(patient_id):
-    """Returns (facts, warnings). Consumes exclusively from MongoDB."""
+    """Returns (facts, warnings). Consumes exclusively from MongoDB and deduplicates identical records."""
     warnings = []
     try:
         col = get_db()["verified_facts"]
@@ -176,7 +176,23 @@ def _load_facts(patient_id):
             else:
                 warnings.append("verified_facts has no patient_id field; all facts were "
                                 "treated as belonging to a single patient.")
-        return list(col.find(query)), warnings
+        raw_facts = list(col.find(query))
+        seen = set()
+        deduped = []
+        for f in raw_facts:
+            k = (
+                f.get("fact_type"),
+                str(f.get("value") or "").strip().lower(),
+                str(f.get("dosage") or "").strip().lower(),
+                str(f.get("frequency") or "").strip().lower(),
+                str(f.get("lab_value") or "").strip().lower(),
+                str(f.get("date") or "").strip().lower(),
+                str(f.get("status") or "").strip().lower(),
+            )
+            if k not in seen:
+                seen.add(k)
+                deduped.append(f)
+        return deduped, warnings
     except Exception as e:
         log.error(f"MongoDB read error: {e}")
         return [], [f"MongoDB error: {e}"]
@@ -289,8 +305,23 @@ def run_safety_and_trend_checks(patient_id=None, current_medications=None, aller
     all_alerts = sorted(report.alerts + conflict_alerts,
                         key=lambda a: SEVERITY_ORDER[a.severity], reverse=True)
 
-    safety = [_alert_to_dict(a) for a in all_alerts if a.category != "trend"]
-    trends = [_alert_to_dict(a) for a in all_alerts if a.category == "trend"]
+    # Deduplicate alerts by (severity, title, message)
+    seen_keys = set()
+    safety = []
+    for a in [_alert_to_dict(x) for x in all_alerts if x.category != "trend"]:
+        k = (a.get("severity"), a.get("title"), a.get("message"))
+        if k not in seen_keys:
+            seen_keys.add(k)
+            safety.append(a)
+
+    seen_trend_keys = set()
+    trends = []
+    for a in [_alert_to_dict(x) for x in all_alerts if x.category == "trend"]:
+        k = a.get("title")
+        if k not in seen_trend_keys:
+            seen_trend_keys.add(k)
+            trends.append(a)
+
     db_failed = any("MongoDB unavailable" in w for w in warnings)
 
     if all_alerts:
